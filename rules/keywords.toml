@@ -23,13 +23,41 @@ regexes = [
   '''^\[|\]$''',
   '''^\*+$''',
   '''(?i)^(changeme|example|placeholder|redacted|xxx+|your[_-]?\w*)$''',
-  '''(?i)(?:password|passwd|passphrase|pwd|secret|token|пароль|парол|секрет|токен)''',
+  '''(?i)^(?:password|passwd|passphrase|pwd|secret|token|пароль|парол\p{L}*|секрет\p{L}*|токен\p{L}*)s?[.,;:!?)]*$''',
+  '''^[\p{L}_]+[=:][^=]''',
+  '''^[a-z_.-]+(?:/[a-z_.-]+)+$''',
+  '''^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$''',
   '''^[(\[{]''',
   '''…''',
 ]
 [[rules.allowlists]]
 regexTarget = "match"
 regexes = ['''(?i)secret:[\w-]+#\d''']
+
+[[rules]]
+id = "password-assignment"
+description = "A password in a config assignment (TOML, INI, .env, JSON, YAML): a value after a key that ends with password, passwd, pwd, passphrase, secret or _pass"
+regex = '''(?i)(?:^|[^\w])["']?[\w.-]*?(?:password|passwd|passphrase|pwd|secret|[_.-]pass|(?-i:Pass))["']?[ \t]*(?:=|:=|:)[ \t]*(?:"([^"\n]{4,200})"|'([^'\n]{4,200})'|([^\s"'`#,;}\]]{4,200}))'''
+keywords = ["password", "passwd", "passphrase", "pwd", "secret", "pass"]
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = [
+  '''^\$|\$\{|\{\{|%\(|\$\(''',
+  '''^<[^>]*>$''',
+  '''\w\(''',
+  '''SECRET:|…''',
+  '''^(?:~|\.{1,2})?/''',
+  '''^[a-z_.-]+(?:/[a-z_.-]+)+$''',
+  '''^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$''',
+  '''^\*+$''',
+  '''(?i)^(?:changeme|change_me|example|placeholder|redacted|xxx+|your[_-]?\w*|todo|none|null|nil|true|false|undefined|required|optional|string|str|secret|password|passwd|pwd|token)$''',
+]
+[[rules.allowlists]]
+regexTarget = "match"
+regexes = [
+  '''[^=]:[ \t]*[*_~]*[\p{L}_-]+[*_~]*[.,;!?)]*$''',
+  '''[^=]:[ \t]*[0-9]+$''',
+]
 
 [[rules]]
 id = "credentials-pair"

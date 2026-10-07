@@ -106,6 +106,8 @@ const passedTexts = new Set<string>()
 // gone when the module reloads.
 const values = new Map<string, string>()
 const VALUES_KEPT = 200
+// A value cut before is looked for again only from this length, and only whole.
+const KNOWN_MIN = 6
 const REVEAL_MS = 30_000
 let gitleaks: string | undefined
 // Homebrew's path once looked for; null when there is none.
@@ -516,14 +518,28 @@ async function knownIn($: EngineInterface, text: string, leaks: readonly Leak[])
   const extra: Leak[] = []
   for (const [hash, value] of values) {
     const one = registry[hash]
-    const at = text.indexOf(value)
-    if (one === undefined || one.number === 0 || value.length < 4 || at < 0) continue
+    if (one === undefined || one.number === 0 || value.length < KNOWN_MIN) continue
+    const at = standalone(text, value)
+    if (at < 0) continue
     if (leaks.some(leak => leak.secret.includes(value))) continue
     const startLine = text.slice(0, at).split('\n').length
     extra.push({ rule: one.rule, secret: value, startLine, endLine: startLine + value.split('\n').length - 1, isEncoded: false })
   }
 
   return [...leaks, ...extra]
+}
+
+/**
+ * Where `value` stands in `text` as a whole: no letter or digit right before
+ * or after it, so a value is not found inside a longer word. -1 when nowhere.
+ */
+function standalone(text: string, value: string): number {
+  const isWordChar = (ch: string | undefined) => ch !== undefined && /[\p{L}\p{Nd}]/u.test(ch)
+  for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {
+    if (!isWordChar(text[at - 1]) && !isWordChar(text[at + value.length])) return at
+  }
+
+  return -1
 }
 
 /** Finds the installed gitleaks and says so in the pane and status line. */

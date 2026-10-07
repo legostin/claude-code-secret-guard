@@ -825,3 +825,15 @@ describe('a check cut short', () => {
     await ui.unmount()
   })
 })
+
+describe('a value cut once, looked for again', () => {
+  test('only as a whole word, never inside a longer one', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    on('prompt.submit', ($, e) => ({ text: e.text }))
+    await $.prompt.submit({ text: 'прод доступ Hz5kq2W9xR', wait: false, origin: { kind: 'composer' } })
+
+    expect(await append($, w, 'id Hz5kq2W9xR9 and xHz5kq2W9xR')).toContain('Hz5kq2W9xR9')
+    expect(await append($, w, 'echo "Hz5kq2W9xR"')).not.toContain('Hz5kq2W9xR')
+  })
+})
