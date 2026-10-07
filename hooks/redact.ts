@@ -185,15 +185,16 @@ const GREP = /^([^\s:]*[/.][^\s:]*):(\d+)[:-]/
 const EXCERPT_LINE = 240
 
 /**
- * The lines around `hit` in `text`, with every leak of the text masked
- * (`ghp_…[40]`, an encoded line as `[encoded secret]`), so the person sees
- * where it stood and never the value. A line a secret could still be read
- * from is dropped to `[…]`.
+ * The lines around `hit` in `text` as the model read them: each leak shown
+ * by `labelOf` (its placeholder where the model read one, its mask where it
+ * saw the value), so the pane never shows a value. A line a secret could
+ * still be read from is dropped to `[…]`.
  */
 export function excerpt(
   text: string,
   leaks: readonly Leak[],
   hit: Leak,
+  labelOf: (leak: Leak, isEncodedLine: boolean) => string,
   where: { file?: string; isFileText?: boolean } = {},
   around = 2,
 ): Excerpt {
@@ -206,18 +207,18 @@ export function excerpt(
   const needles: Needle[] = []
   const pieces: string[] = []
   for (const leak of leaks) {
-    const shown = mask(leak.secret)
-    needles.push({ needle: leak.secret, label: shown })
+    const label = labelOf(leak, false)
+    needles.push({ needle: leak.secret, label })
+    pieces.push(leak.secret)
     for (const part of leak.secret.split('\n')) {
       if (part.trim().length >= 8) {
-        needles.push({ needle: part, label: shown })
+        needles.push({ needle: part, label })
         pieces.push(part)
       }
     }
-    pieces.push(leak.secret)
     if (leak.isEncoded) {
       for (const line of lines.slice(leak.startLine - 1, leak.endLine)) {
-        if (!line.includes(leak.secret) && line.trim().length >= 8) needles.push({ needle: line, label: '[encoded secret]' })
+        if (!line.includes(leak.secret) && line.trim().length >= 8) needles.push({ needle: line, label: labelOf(leak, true) })
       }
     }
   }

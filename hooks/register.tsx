@@ -16,7 +16,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, EventOf, Register, ToolCallResult } from 'claude-code'
 
 import type { Decision, Entry } from '../types'
-import { excerpt, hashOf, mapTexts, mask, parseReport, redact, redactRecord, uniqueByHash } from './redact'
+import { excerpt, hashOf, mapTexts, mask, parseReport, placeholder, redact, redactRecord, uniqueByHash } from './redact'
 import type { Cut, Found, Leak } from './redact'
 import {
   clock,
@@ -39,6 +39,7 @@ const entries = atom({ plugin: 'secret-guard', key: 'entries' } as const, [])
 const allowed = atom({ plugin: 'secret-guard', key: 'allowed' } as const, [])
 const labels = atom({ plugin: 'secret-guard', key: 'labels' } as const, {})
 const scanner = atom({ plugin: 'secret-guard', key: 'scanner' } as const, { status: 'unknown', detail: '' })
+const expanded = atom({ plugin: 'secret-guard', key: 'expanded' } as const, [])
 
 const GITLEAKS_ARGS = [
   'stdin',
@@ -56,11 +57,14 @@ const MAX_ENTRIES = 200
 // Rows no secret reaches: the model's own words, a compaction of rows already
 // checked, and notices the model never reads.
 const QUIET_DOORS: ReadonlySet<string> = new Set(['response', 'compaction', 'notice'])
-const HIDING: ReadonlySet<Decision> = new Set(['redacted', 'hidden', 'dropped', 'auto-redacted', 'withheld'])
-const ALLOWABLE: ReadonlySet<Decision> = new Set(['redacted', 'hidden', 'dropped', 'auto-redacted'])
-// Decisions the model never read the value under, and those it read a placeholder for.
-const CUT: ReadonlySet<Decision> = new Set(['redacted', 'hidden', 'dropped', 'auto-redacted', 'withheld'])
-const MODEL_READ: ReadonlySet<Decision> = new Set(['redacted', 'auto-redacted'])
+const HIDING: ReadonlySet<Decision> = new Set(['redacted', 'recut', 'hidden', 'dropped', 'auto-redacted', 'withheld'])
+const ALLOWABLE: ReadonlySet<Decision> = new Set(['redacted', 'recut', 'hidden', 'dropped', 'auto-redacted'])
+// The model never read the value under these; it read a placeholder under
+// MODEL_READ, the value itself under SAW, and nothing at all under NOTHING.
+const CUT: ReadonlySet<Decision> = new Set(['redacted', 'recut', 'hidden', 'dropped', 'auto-redacted', 'withheld'])
+const MODEL_READ: ReadonlySet<Decision> = new Set(['redacted', 'recut', 'auto-redacted'])
+const SAW: ReadonlySet<Decision> = new Set(['passed', 'allowlisted'])
+const NOTHING: ReadonlySet<Decision> = new Set(['hidden', 'dropped', 'withheld'])
 
 type ScanResult = { isScanned: true; leaks: Leak[] } | { isScanned: false; reason: string }
 
@@ -140,7 +144,7 @@ export const register: Register = (on, options) => {
     }
     const { known, novel } = await splitKnown($, found)
     if (novel.length === 0) {
-      await record($, source, known, 'redacted', origin)
+      await record($, source, known, 'recut', origin)
 
       return cutOutput($, ran, known, String(e.tool))
     }
@@ -156,12 +160,13 @@ export const register: Register = (on, options) => {
       const reason = choice === 'pass' ? 'passed' : 'allowlisted'
       await allow($, novel, reason)
       await record($, source, novel, reason, origin)
-      await record($, source, known, 'redacted', origin)
+      await record($, source, known, 'recut', origin)
 
       return known.length === 0 ? ran : cutOutput($, ran, known, String(e.tool))
     }
     await numbersFor($, found)
-    await record($, source, found, 'redacted', origin)
+    await record($, source, novel, 'redacted', origin)
+    await record($, source, known, 'recut', origin)
 
     return cutOutput($, ran, found, String(e.tool))
   }).catch(($, e, next) =>
@@ -218,7 +223,8 @@ export const register: Register = (on, options) => {
     }
     const cut = choice === 'redact' ? found : known
     const cuts = await cutsFor($, cut)
-    await record($, t.prompt, cut, 'redacted', origin)
+    if (choice === 'redact') await record($, t.prompt, novel, 'redacted', origin)
+    await record($, t.prompt, known, 'recut', origin)
 
     return next({ ...e, text: redact(e.text, cuts) })
   }).catch(($, e, next) =>
@@ -476,8 +482,9 @@ async function scrubAsking($: EngineInterface, text: string, source: string, fil
 async function cutFound($: EngineInterface, source: string, found: readonly Found[], origin: Origin): Promise<string> {
   const { text } = origin
   if (found.length === 0) return text
-  const { novel } = await splitKnown($, found)
+  const { known, novel } = await splitKnown($, found)
   const cuts = await cutsFor($, found)
+  await record($, source, known, 'recut', origin)
   if (novel.length > 0) {
     await record($, source, novel, 'auto-redacted', origin)
     $.ui.toast(t.autoCut(novel[0]?.leak.rule ?? 'secret', source))
@@ -538,12 +545,27 @@ async function record(
   const numbers = await read($, labels)
   const at = await $.clock.now()
   const root = origin === undefined ? '' : await $.session.root()
+
+  // Each leak of the text as the model read it: its placeholder where it was
+  // cut, its mask where the model may read it (the pane never shows a value).
+  const passed = new Set((await read($, allowed)).map(one => one.hash))
+  const hashes = new Map<string, string>()
+  for (const leak of origin?.leaks ?? []) hashes.set(leak.secret, await hashOf(leak.secret))
+  const withHashes = (origin?.leaks ?? []).map(leak => ({ leak, hash: hashes.get(leak.secret) ?? '' }))
+  const rules = new Map(uniqueByHash(withHashes).map(one => [one.hash, one.leak.rule]))
+  const labelOf = (leak: Leak, isEncodedLine: boolean) => {
+    const hash = hashes.get(leak.secret) ?? ''
+    const number = numbers[hash]
+    if (number === undefined || passed.has(hash)) return isEncodedLine ? '[encoded secret]' : mask(leak.secret)
+
+    return placeholder(rules.get(hash) ?? leak.rule, number, isEncodedLine)
+  }
   const placeOf = (leak: Leak) => {
     if (origin === undefined) return {}
-    const where = excerpt(origin.text, origin.leaks, leak, { file: origin.file, isFileText: origin.isFileText })
+    const where = excerpt(origin.text, origin.leaks, leak, labelOf, { file: origin.file, isFileText: origin.isFileText })
 
     return {
-      ...(where.file === undefined ? {} : { file: shortPath(where.file, root) }),
+      ...(where.file === undefined ? {} : { file: shortPath(where.file, root), filePath: where.file }),
       line: where.line,
       isFileLine: where.isFileLine,
       lines: where.lines,
@@ -597,15 +619,86 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
   const journal = await read($, entries)
   const allowList = await read($, allowed)
   const state = await read($, scanner)
+  const opened = new Set(await read($, expanded))
   const allowedHashes = new Set(allowList.map(one => one.hash))
   const width = Math.max(24, 'bodyColumns' in e.props && typeof e.props.bodyColumns === 'number' ? e.props.bodyColumns : 60)
   const shown = journal.slice(-50).reverse()
+
+  const toggle = (seq: number) =>
+    update($, expanded, list => (list.includes(seq) ? list.filter(one => one !== seq) : [...list, seq]))
   const allowEntry = (entry: Entry) =>
     update($, allowed, list =>
       list.some(one => one.hash === entry.hash)
         ? list
         : [...list, { hash: entry.hash, rule: entry.rule, mask: entry.mask, reason: 'allowlisted' as const }],
     )
+  const clear = async () => {
+    await update($, entries, () => [])
+    await update($, expanded, () => [])
+    await refreshStatus($)
+  }
+
+  const drawEntry = (entry: Entry) => {
+    const isOpen = opened.has(entry.seq)
+    const hits = (entry.lines ?? []).filter(line => line.isHit)
+    const place =
+      entry.line === undefined
+        ? undefined
+        : entry.file !== undefined && entry.isFileLine === true
+          ? t.pane.at(entry.file, entry.line)
+          : `${entry.file === undefined ? '' : `${entry.file} · `}${t.pane.textLine(entry.line)}`
+    const title = `${isOpen ? '▾' : '▸'} ${clock(entry.at)}  ${entry.rule}${entry.label > 0 ? ` #${entry.label}` : ''}  ${entry.mask}`
+
+    return (
+      <Box key={`entry-${entry.seq}`} flexDirection="column" marginTop={1}>
+        <Button key={`open-${entry.seq}`} plain label={title} onPress={() => toggle(entry.seq)} />
+        <Text wrap="wrap" color={CUT.has(entry.decision) ? 'success' : 'warning'}>
+          {t.decisions[entry.decision]}
+        </Text>
+        {place !== undefined && <Text wrap={isOpen ? 'wrap' : 'truncate-middle'}>{place}</Text>}
+        {!isOpen && (
+          <Text wrap="truncate-end" dimColor>
+            {entry.source}
+          </Text>
+        )}
+        {entry.lines === undefined && entry.hash !== '' && (
+          <Text wrap="wrap" dimColor>
+            {t.pane.noPlace}
+          </Text>
+        )}
+        {hits.length > 0 && (
+          <Text wrap="wrap" dimColor>
+            {NOTHING.has(entry.decision) ? t.pane.modelNothing : SAW.has(entry.decision) ? t.pane.sawLine : t.pane.modelLine}
+          </Text>
+        )}
+        {hits.map((line, index) => (
+          <Text key={`hit-${entry.seq}-${index}`} wrap={isOpen ? 'wrap' : 'truncate-end'} bold>
+            {'› '}
+            {tidy(line.text).trimStart()}
+          </Text>
+        ))}
+        {isOpen && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text dimColor>{t.pane.sourceLabel}</Text>
+            <Text wrap="wrap">{entry.source}</Text>
+            {entry.filePath !== undefined && <Text dimColor>{t.pane.fileLabel}</Text>}
+            {entry.filePath !== undefined && <Text wrap="wrap">{entry.filePath}</Text>}
+            {(entry.lines?.length ?? 0) > hits.length && <Text dimColor>{t.pane.around}</Text>}
+            {(entry.lines?.length ?? 0) > hits.length &&
+              (entry.lines ?? []).map((line, index) => (
+                <Text key={`line-${entry.seq}-${index}`} wrap="wrap" dimColor={!line.isHit} bold={line.isHit}>
+                  {line.isHit ? '› ' : '  '}
+                  {tidy(line.text)}
+                </Text>
+              ))}
+            {ALLOWABLE.has(entry.decision) && entry.hash !== '' && !allowedHashes.has(entry.hash) && (
+              <Button key={`allow-${entry.seq}`} label={t.pane.allowButton} onPress={() => allowEntry(entry)} />
+            )}
+          </Box>
+        )}
+      </Box>
+    )
+  }
 
   return (
     <Box flexDirection="column" width={width}>
@@ -615,46 +708,15 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
       <Text wrap="wrap" dimColor>
         {t.pane.intro}
       </Text>
-      <Text> </Text>
-      <Text bold>{t.pane.findings(journal.length)}</Text>
+      <Box flexDirection="row" marginTop={1} justifyContent="space-between">
+        <Text bold>{t.pane.findings(journal.length)}</Text>
+        {journal.length > 0 && <Button key="clear" label={t.pane.clear} onPress={clear} />}
+      </Box>
       {shown.length === 0 && <Text dimColor>{t.pane.none}</Text>}
-      {shown.map(entry => (
-        <Box key={`entry-${entry.seq}`} flexDirection="column" marginTop={1}>
-          <Text wrap="wrap" bold>
-            {clock(entry.at)} {entry.rule}
-            {entry.label > 0 ? ` #${entry.label}` : ''} {entry.mask}
-          </Text>
-          <Text wrap="wrap" color={CUT.has(entry.decision) ? 'success' : 'warning'}>
-            {t.decisions[entry.decision]}
-          </Text>
-          <Text wrap="wrap" dimColor>
-            {entry.source}
-          </Text>
-          {entry.line !== undefined && (
-            <Text wrap="wrap">
-              {entry.file !== undefined && entry.isFileLine === true
-                ? t.pane.at(entry.file, entry.line)
-                : `${entry.file === undefined ? '' : `${entry.file} · `}${t.pane.textLine(entry.line)}`}
-            </Text>
-          )}
-          {(entry.lines ?? []).map((line, index) => (
-            <Text key={`line-${entry.seq}-${index}`} wrap="wrap" dimColor={!line.isHit} bold={line.isHit}>
-              {line.isHit ? '› ' : '  '}
-              {line.text.replace(/\t/g, '  ')}
-            </Text>
-          ))}
-          {MODEL_READ.has(entry.decision) && entry.label > 0 && (
-            <Text wrap="wrap" dimColor>
-              {t.pane.modelRead(`[SECRET:${entry.rule}#${entry.label}]`)}
-            </Text>
-          )}
-          {ALLOWABLE.has(entry.decision) && entry.hash !== '' && !allowedHashes.has(entry.hash) && (
-            <Button key={`allow-${entry.seq}`} label={t.pane.allowButton} onPress={() => allowEntry(entry)} />
-          )}
-        </Box>
-      ))}
-      <Text> </Text>
-      <Text bold>{t.pane.allowlist(allowList.length)}</Text>
+      {shown.map(drawEntry)}
+      <Box marginTop={1}>
+        <Text bold>{t.pane.allowlist(allowList.length)}</Text>
+      </Box>
       {allowList.length === 0 && (
         <Text wrap="wrap" dimColor>
           {t.pane.allowEmpty}
@@ -672,12 +734,18 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
           />
         </Box>
       ))}
-      <Text> </Text>
-      <Text wrap="wrap" dimColor>
-        {t.pane.allowHint}
-      </Text>
+      <Box marginTop={1}>
+        <Text wrap="wrap" dimColor>
+          {t.pane.allowHint}
+        </Text>
+      </Box>
     </Box>
   )
+}
+
+/** A line as the pane draws it: tabs (a Read's numbering) as spaces. */
+function tidy(text: string): string {
+  return text.replace(/\t/g, '  ')
 }
 
 // --- small helpers ------------------------------------------------------------

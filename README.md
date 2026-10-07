@@ -63,14 +63,14 @@ Answer `y` to add the marketplace, then pick a scope (user scope protects every 
 
 ## Use
 
-- **`/secrets`** opens the side pane. For every finding it shows:
+- **`/secrets`** opens the side pane. Each finding shows:
   - the rule and the mask;
-  - what happened, in plain words;
-  - where it came from: the **file and line** when the text says (a Read, a Grep match, a changed-file note, an `@`-file), otherwise the line of the output;
-  - **the line itself and two lines around it**, with every secret masked;
-  - what the model read instead.
+  - what happened: cut on your choice, cut again (a value cut before), hidden, passed;
+  - where it stood, as `file:line` when the text says (a Read, a Grep match, a changed-file note, an `@`-file), otherwise the line of the output;
+  - **the line exactly as the model read it**, e.g. `GITHUB_TOKEN=[SECRET:github-pat#1]`.
 
-  A false positive can be marked *allow from now on*; *stop allowing* takes it back.
+  **Press a finding** to open it: the whole source (the full command), the whole file path, the lines around it as the model read them, and *allow from now on* for a false positive. *Clear the journal* empties the list.
+
 - The **status line** shows `secret-guard: N hidden · /secrets` once something has been withheld. If gitleaks is missing, it shows the install command.
 - **Language.** The dialogs and the pane speak English or Russian. Run `/plugin configure secret-guard@secret-guard`, or set it in `settings.json`:
   ```json

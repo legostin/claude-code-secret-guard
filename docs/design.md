@@ -42,7 +42,8 @@ Secrets (API keys, tokens, private keys, passwords) must not reach the model, no
 
 `$.state` (session, survives hot reloads), declared in `types/index.d.ts`:
 
-- `entries`: the journal: masks (`ghp_…[40]`), SHA-256 prefixes, sources, decisions, and where each secret stood: the file and line (from a Read's numbering, a Grep match, a changed-file note, an `@`-file) and the lines around it with every secret masked (`excerpt`); never values.
+- `entries`: the journal: masks (`ghp_…[40]`), SHA-256 prefixes, sources, decisions, and where each secret stood: the file and line (from a Read's numbering, a Grep match, a changed-file note, an `@`-file) and the lines around it as the model read them (`excerpt`: a placeholder where it was cut, a mask where the model may read the value); never values.
+- `expanded`: the journal rows opened in the pane.
 - `allowed`: hashes the model may read (passed once, or *not a secret*).
 - `labels`: hash → placeholder number.
 - `scanner`: status for the pane and status line.
@@ -55,7 +56,7 @@ Raw values exist only in the module's memory, while a text is checked, plus a 64
 
 ## Verification
 
-- `claude plugin test .`: 35 tests. Pure helpers, plus hooks over the engine's test kit with gitleaks and the dialog stubbed: cut / hide / dismiss / pass / repeat secret / scanner failure / prompt cut / prompt cancel / pane and allowlist / file, line and masked lines in the pane / system prompt / Russian texts.
+- `claude plugin test .`: 36 tests. Pure helpers, plus hooks over the engine's test kit with gitleaks and the dialog stubbed: cut / hide / dismiss / pass / repeat secret / scanner failure / prompt cut / prompt cancel / pane and allowlist / file, line and masked lines in the pane / system prompt / Russian texts.
 - Live, against Claude Code 2.1.292 and gitleaks 8.30.1, with `claude -p --plugin-dir`:
   1. `cat` of a file holding a GitHub token: the dialog cannot be shown, the output is hidden; the model answers that it never saw the content; the token occurs **0 times** in the transcript file.
   2. The same with *dismiss → cut* forced, on a file with a plain token and a base64-encoded one: the model quotes `GITHUB_TOKEN=[SECRET:…#1]` and `[SECRET:github-pat#…: encoded secret, line withheld]`; plain, base64 and decoded values occur **0 times** in the transcript.

@@ -78,7 +78,14 @@ export type Texts = {
     none: string
     at: (file: string, line: number) => string
     textLine: (line: number) => string
-    modelRead: (placeholder: string) => string
+    modelLine: string
+    sawLine: string
+    modelNothing: string
+    sourceLabel: string
+    fileLabel: string
+    around: string
+    noPlace: string
+    clear: string
     allowlist: (count: number) => string
     allowEmpty: string
     allowHint: string
@@ -127,6 +134,7 @@ const EN: Texts = {
   failureOptions: { hide: 'Hide from the model', pass: 'Pass it unchecked' },
   decisions: {
     redacted: 'cut on your choice',
+    recut: 'cut again: this value was cut before, so no question',
     hidden: 'the whole output hidden from the model',
     passed: 'passed on your choice: the model saw the value',
     allowlisted: 'marked not a secret: the model saw the value',
@@ -144,7 +152,7 @@ const EN: Texts = {
     'hook-context': 'hook context',
     note: 'plugin note',
   },
-  toolQuestion: (source, found) => `${source}: secrets found (${describe(found, 'en')}). What should the model see?`,
+  toolQuestion: (source, found) => `${clip(source, 90)}: secrets found (${describe(found, 'en')}). What should the model see?`,
   promptQuestion: found => `Your prompt holds secrets (${describe(found, 'en')}). What should be sent?`,
   mentionQuestion: (source, found) => `${source} holds secrets (${describe(found, 'en')}). What should be attached?`,
   failureQuestion: (source, reason) => `secret-guard could not check ${source} (${reason}). Pass it to the model unchecked?`,
@@ -170,12 +178,19 @@ const EN: Texts = {
   paneOpened: 'secret-guard pane opened.',
   pane: {
     scanner: detail => `Scanner: ${detail}`,
-    intro: 'Secrets caught on their way to the model. Nothing in this pane is sent to it.',
+    intro: 'Secrets caught on their way to the model. Nothing in this pane is sent to it. Press a finding to open it.',
     findings: count => `Findings (${count})`,
     none: 'Nothing found yet.',
-    at: (file, line) => `${file}, line ${line}`,
-    textLine: line => `line ${line} of the text`,
-    modelRead: placeholder => `the model read: ${placeholder}`,
+    at: (file, line) => `${file}:${line}`,
+    textLine: line => `line ${line} of the output`,
+    modelLine: 'The line, as the model read it:',
+    sawLine: 'The line (the value is masked here; the model saw it):',
+    modelNothing: 'The model read none of this output.',
+    sourceLabel: 'Source:',
+    fileLabel: 'File:',
+    around: 'Around it, as the model read it:',
+    noPlace: 'Recorded by an earlier version: no file or lines kept.',
+    clear: 'clear the journal',
     allowlist: count => `Allowlist (${count})`,
     allowEmpty: 'Empty: the model sees none of the values found.',
     allowHint: 'An allowed value reaches the model from now on; what was already cut stays cut.',
@@ -209,6 +224,7 @@ const RU: Texts = {
   failureOptions: { hide: 'Скрыть от модели', pass: 'Пропустить без проверки' },
   decisions: {
     redacted: 'вырезан по вашему решению',
+    recut: 'вырезан снова: это значение уже вырезалось, поэтому без вопроса',
     hidden: 'весь вывод скрыт от модели',
     passed: 'пропущен по вашему решению: модель видела значение',
     allowlisted: 'отмечен «не секрет»: модель видела значение',
@@ -226,7 +242,7 @@ const RU: Texts = {
     'hook-context': 'контекст хука',
     note: 'запись плагина',
   },
-  toolQuestion: (source, found) => `${source}: найдены секреты (${describe(found, 'ru')}). Что отдать модели?`,
+  toolQuestion: (source, found) => `${clip(source, 90)}: найдены секреты (${describe(found, 'ru')}). Что отдать модели?`,
   promptQuestion: found => `В вашем промпте найдены секреты (${describe(found, 'ru')}). Что отправить модели?`,
   mentionQuestion: (source, found) => `В файле ${source} найдены секреты (${describe(found, 'ru')}). Что приложить к промпту?`,
   failureQuestion: (source, reason) => `secret-guard не смог проверить ${source} (${reason}). Отдать модели без проверки?`,
@@ -252,12 +268,19 @@ const RU: Texts = {
   paneOpened: 'Панель secret-guard открыта.',
   pane: {
     scanner: detail => `Сканер: ${detail}`,
-    intro: 'Секреты, перехваченные по пути к модели. Ничего из этой панели модели не отправляется.',
+    intro: 'Секреты, перехваченные по пути к модели. Ничего из этой панели модели не отправляется. Нажмите на находку, чтобы раскрыть её.',
     findings: count => `Находки (${count})`,
     none: 'Пока ничего не найдено.',
-    at: (file, line) => `${file}, строка ${line}`,
-    textLine: line => `строка ${line} текста`,
-    modelRead: placeholder => `модель видела: ${placeholder}`,
+    at: (file, line) => `${file}:${line}`,
+    textLine: line => `строка ${line} вывода`,
+    modelLine: 'Строка в том виде, в каком её прочитала модель:',
+    sawLine: 'Строка (значение здесь замаскировано; модель его видела):',
+    modelNothing: 'Модель не получила ничего из этого вывода.',
+    sourceLabel: 'Источник:',
+    fileLabel: 'Файл:',
+    around: 'Вокруг, в том виде, в каком прочитала модель:',
+    noPlace: 'Записано прошлой версией: файл и строки не сохранены.',
+    clear: 'очистить журнал',
     allowlist: count => `Allowlist (${count})`,
     allowEmpty: 'Пусто: модель не видит ни одного найденного значения.',
     allowHint: 'Разрешённое значение доходит до модели с этого момента; уже вырезанное остаётся вырезанным.',
@@ -287,9 +310,7 @@ export function describeCall(tool: string, input: Record<string, unknown>, prefi
   const detail = [input.command, input.file_path, input.url, input.pattern, input.path].find(
     value => typeof value === 'string' && value !== '',
   ) as string | undefined
-  const short = detail === undefined ? '' : `: ${detail.length > 60 ? `${detail.slice(0, 57)}...` : detail}`
-
-  return `${prefix}${tool}${short}`
+  return `${prefix}${tool}${detail === undefined ? '' : `: ${detail}`}`
 }
 
 /** The key an answer was given for, or the fallback for anything else. */
@@ -312,9 +333,12 @@ export function pathIn(text: string): string | undefined {
   return match?.[1]?.replace(/[.,:;]+$/, '')
 }
 
-/** A path as the pane shows it: under the project root relative, a long one by its end. */
+/** A path as the pane shows it: under the project root relative, elsewhere whole. */
 export function shortPath(path: string, root: string): string {
-  const relative = root !== '' && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path
+  return root !== '' && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path
+}
 
-  return relative.length > 70 ? `…${relative.slice(-69)}` : relative
+/** A text cut to `max` characters, for a dialog's one line. */
+export function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }

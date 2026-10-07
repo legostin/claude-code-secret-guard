@@ -229,7 +229,7 @@ describe('prompt', () => {
 })
 
 describe('pane', () => {
-  test('shows the file, the line and the lines around a finding, never the value', async ($, on) => {
+  test('a finding shows its file:line and the line as the model read it; pressed, its source and the lines around', async ($, on) => {
     const w: World = { answer: 'Cut the secrets', questions: [] }
     const read = ['     1\t# settings', `     2\tGITHUB_TOKEN=${TOKEN}`, '     3\tDEBUG=1'].join('\n')
     world(on, w, read)
@@ -237,27 +237,47 @@ describe('pane', () => {
 
     await $.tool.call({ tool: 'Read', file_path: '/project/config/.env' })
     const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
-    expect(await ui.find({ type: 'Text', text: /config\/\.env, line 2/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /GITHUB_TOKEN=ghp_…\[40\]/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^config\/\.env:2$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /as the model read it/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /› 2 +GITHUB_TOKEN=\[SECRET:github-pat#1\]/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /DEBUG=1/ })).toBeUndefined()
+
+    await ui.press({ key: 'open-1' })
+    expect(await ui.find({ type: 'Text', text: /^\/project\/config\/\.env$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /DEBUG=1/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /the model read: \[SECRET:github-pat#1\]/ })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'allow-1' })).toBeDefined()
     expect(JSON.stringify(await ui.drawn())).not.toContain(TOKEN)
     await ui.unmount()
   })
 
-  test('lists a finding by mask, and "не секрет" allowlists it', async ($, on) => {
+  test('a value cut before is journaled as cut again, not as asked', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+    await $.tool.call({ tool: 'Bash', command: 'env' })
+
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    expect(await ui.find({ type: 'Text', text: /cut again/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /cut on your choice/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('lists a finding by mask on every surface, and "allow from now on" allowlists it', async ($, on) => {
     const w: World = { answer: 'Cut the secrets', questions: [] }
     world(on, w, OUTPUT)
     await $.tool.call({ tool: 'Bash', command: 'cat .env' })
 
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'secret-guard', surface, ...PANE })
-      expect(await ui.find({ type: 'Text', text: /github-pat #1/ })).toBeDefined()
-      expect(JSON.stringify(await ui.find({ type: 'Text', text: /ghp_…\[40\]/ }))).not.toContain(TOKEN)
+      const drawn = JSON.stringify(await ui.drawn())
+      expect(await ui.find({ type: 'Button', key: 'open-1' })).toBeDefined()
+      expect(drawn).toContain('github-pat #1  ghp_…[40]')
+      expect(drawn).not.toContain(TOKEN)
       await ui.unmount()
     }
 
     const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    await ui.press({ key: 'open-1' })
     await ui.press({ key: 'allow-1' })
     expect(await ui.find({ type: 'Text', text: /Allowlist \(1\)/ })).toBeDefined()
     await ui.unmount()

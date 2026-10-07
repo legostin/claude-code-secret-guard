@@ -1,7 +1,8 @@
 /**
  * What became of a secret the scanner found.
  *
- * - `redacted`: cut out on the person's choice (or again, a secret already cut)
+ * - `redacted`: cut out on the person's choice
+ * - `recut`: cut again without asking, a value cut before
  * - `hidden`: the whole tool output withheld on the person's choice
  * - `passed`: shown to the model on the person's choice
  * - `allowlisted`: marked as no secret, passed from now on
@@ -11,6 +12,7 @@
  */
 export type Decision =
   | 'redacted'
+  | 'recut'
   | 'hidden'
   | 'passed'
   | 'allowlisted'
@@ -32,12 +34,14 @@ export type Entry = {
   mask: string
   hash: string
   decision: Decision
-  /** The file the secret stood in, when the text says which. */
+  /** The file the secret stood in, when the text says which: under the project root relative. */
   file?: string
+  /** The same file's path as the text gave it, whole. */
+  filePath?: string
   /** Its line: in `file` when `isFileLine`, else in the text that was checked. */
   line?: number
   isFileLine?: boolean
-  /** The lines around it, every secret masked. */
+  /** The lines around it as the model read them: placeholders where it read none, masks where it saw the value. */
   lines?: { text: string; isHit: boolean }[]
 }
 
@@ -61,6 +65,8 @@ declare module 'claude-code' {
       allowed: Allowed[]
       labels: Record<string, number>
       scanner: Scanner
+      /** The journal rows the person opened in the pane, by `seq`. */
+      expanded: number[]
     }
   }
 }
