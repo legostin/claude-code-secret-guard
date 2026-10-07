@@ -99,6 +99,13 @@ def main() -> None:
         'token counting, in a list': 'streaming, tool use, MCP, agents, caching, token counting, model migration',
         'password: true': 'require password: true',
         'token: null': 'token: null',
+        'a path under a secret-guard folder': 'Note: /Users/x/.claude/dev-mods/ab12/secret-guard/.claude-plugin/plugin.json changed on disk.',
+        'folders named secrets and tokens': 'see secrets/prod.yaml and tokens/cache.json',
+        'secret: a path': 'secret: /etc/ssl/private/server.pem',
+        'this rule\'s own source': 'regex = (?i)(?:пароль|парол[яюеи]|password|passwd|pwd|секрет|secret|токен|token|access key)[x]',
+        'a keyword given as the value': 'password: password123',
+        'keywords listed after a keyword': 'secret: token, password, passphrase',
+        'an allowlist entry': "regexes = ['^\\$', '(?i)^(password|pass|secret|changeme|xxx+)$']",
     }
 
     failed = False

@@ -49,9 +49,9 @@ gitleaks' default rules (about 200 known token shapes: `ghp_…`, `sk_live_…`,
 | **Keyword rules** | a value after *пароль / password / pwd / passphrase / секрет / secret / токен / token / ключ доступа / access key*, in English or Russian, with up to three words before a separator (`пароль от прод базы: …`, `the password is …`); a password in a URL (`postgres://user:…@host`); a `Bearer` token; `sk-proj-` keys | `keywordRules` |
 | **Entropy rule** | a long random-looking token with no known shape, by its Shannon entropy (20–128 characters, upper and lower case and digits, ≥ 4.0 bits per character): about **93%** of random 20–64-character tokens | `entropyRule` |
 
-Words, numbers, code (`getenv(…)`), templates (`${X}`), markup, hashes, UUIDs, SRI values, paths and secret-guard's own placeholders are not treated as secrets. Both layers extend your project's `.gitleaks.toml` when it has one. A `GITLEAKS_CONFIG` you set yourself takes precedence, and then the extra layers are left out.
+Only the value after a keyword is cut, never the word itself. There must be a space or a separator between them, so `secret-guard/…` or `tokens/cache.json` is a path, not a secret. Words, numbers, code (`getenv(…)`), templates (`${X}`), markup, hashes, UUIDs, SRI values, paths, a value that holds a keyword itself (`password: password123`, a list of keyword names) and secret-guard's own placeholders are not treated as secrets. Both layers extend your project's `.gitleaks.toml` when it has one. A `GITLEAKS_CONFIG` you set yourself takes precedence, and then the extra layers are left out.
 
-[`scripts/check_rules.py`](scripts/check_rules.py) checks the rules against real gitleaks in CI: 13 phrases that must be caught, 28 that must not (taken from real Claude Code sessions, lockfiles and git logs), and the entropy rule's recall.
+[`scripts/check_rules.py`](scripts/check_rules.py) checks the rules against real gitleaks in CI: 13 phrases that must be caught, 35 that must not (taken from real Claude Code sessions, lockfiles and git logs), and the entropy rule's recall.
 
 A secret you have already cut once is cut again silently. You are asked again only when a *new* secret shows up.
 

@@ -1,6 +1,6 @@
 {
   "name": "secret-guard",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Keeps secrets out of Claude's context: gitleaks scans every tool output, prompt and attachment before the model reads it, and you decide what the model sees.",
   "author": {
     "name": "Legostin Vyacheslav",
