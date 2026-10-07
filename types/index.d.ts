@@ -69,6 +69,17 @@ export type Known = {
   lastSource: string
 }
 
+/**
+ * One event of the history kept across sessions, in the plugin's store on
+ * disk: a journal row with no hash (a short secret's hash could be brute
+ * forced) and its lines cut down to the ones around the secret.
+ */
+export type HistoryEntry = Omit<Entry, 'hash' | 'seq'> & {
+  id: string
+  session: string
+  project: string
+}
+
 /** A secret the model may read: passed once, or marked as no secret. */
 export type Allowed = {
   hash: string
@@ -96,6 +107,12 @@ declare module 'claude-code' {
       expanded: number[]
       /** The secrets whose value the person is shown right now, by hash. */
       revealed: string[]
+      /** The pane's tab. */
+      tab: 'session' | 'history'
+      /** The history events the person opened, by id. */
+      openedHistory: string[]
+      /** Bumped whenever the stored history changes, so the pane draws it again. */
+      historyVersion: number
     }
   }
 }

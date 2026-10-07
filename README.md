@@ -46,12 +46,13 @@ gitleaks' default rules (about 200 known token shapes: `ghp_…`, `sk_live_…`,
 
 | Layer | Catches | Option |
 |---|---|---|
-| **Keyword rules** | a value after *пароль / password / pwd / passphrase / секрет / secret / токен / token / ключ доступа / access key*, in English or Russian, with up to three words before a separator (`пароль от прод базы: …`, `the password is …`); a password in a URL (`postgres://user:…@host`); a `Bearer` token; `sk-proj-` keys | `keywordRules` |
+| **Keyword rules** | a value after *пароль / password / pwd / passphrase / секрет / secret / токен / token / ключ доступа / access key*, in English or Russian, with up to three words before a separator (`пароль от прод базы: …`, `the password is …`); a password in a URL (`postgres://user:…@host`); a `login:password` pair after *доступ / логин / креды / access / login / credentials* (`доступ к базе admin:…`); a `Bearer` token; `sk-proj-` keys | `keywordRules` |
 | **Entropy rule** | a long random-looking token with no known shape, by its Shannon entropy (20–128 characters, upper and lower case and digits, ≥ 4.0 bits per character): about **93%** of random 20–64-character tokens | `entropyRule` |
+| **Random words in your prompt** | a password typed with nothing around it (`прод доступ 73Kd91a4qx!!!`): a word of 8+ characters whose kind of character (lower, upper, digit, symbol) keeps changing. About **75%** of such passwords; a dialog on **0.2%** of ordinary prompts (measured on 593 real prompts). Prompts up to 2000 characters only | `wordRule` |
 
 Only the value after a keyword is cut, never the word itself. There must be a space or a separator between them, so `secret-guard/…` or `tokens/cache.json` is a path, not a secret. Words, numbers, code (`getenv(…)`), templates (`${X}`), markup, hashes, UUIDs, SRI values, paths, a value that holds a keyword itself (`password: password123`, a list of keyword names) and secret-guard's own placeholders are not treated as secrets. Both layers extend your project's `.gitleaks.toml` when it has one. A `GITLEAKS_CONFIG` you set yourself takes precedence, and then the extra layers are left out.
 
-[`scripts/check_rules.py`](scripts/check_rules.py) checks the rules against real gitleaks in CI: 13 phrases that must be caught, 35 that must not (taken from real Claude Code sessions, lockfiles and git logs), and the entropy rule's recall.
+[`scripts/check_rules.py`](scripts/check_rules.py) checks the rules against real gitleaks in CI: 17 phrases that must be caught, 43 that must not (taken from real Claude Code sessions, lockfiles and git logs), and the entropy rule's recall.
 
 A secret you have already cut once is cut again silently. You are asked again only when a *new* secret shows up.
 
@@ -76,9 +77,9 @@ Answer `y` to add the marketplace, then pick a scope (user scope protects every 
 
 ## Use
 
-- **`/secrets`** opens the side pane. It has two parts.
+- **`/secrets`** opens the side pane. It has two tabs.
 
-  **Secrets this session** is the registry: every value met, listed once, with its status (*cut without a question* or *the model sees it*), how often it was seen and where last. For each value:
+  **This session** is the registry: every value met, listed once, with its status (*cut without a question* or *the model sees it*), how often it was seen and where last. For each value:
   - *show the value*: the value itself, in the pane only, for 30 seconds;
   - *allow from now on* or *cut again*;
   - *forget*: the next time the value appears, you are asked again.
@@ -91,6 +92,8 @@ Answer `y` to add the marketplace, then pick a scope (user scope protects every 
   - the lines around it (three each side; six once opened). The line with the secret appears both as the model read it (`GITHUB_TOKEN=[SECRET:github-pat#1]`) and as it is in the file, value masked (`GITHUB_TOKEN=ghp_…[40]`).
 
   Press an event to open it: the whole source command and the whole file path. *Clear the log* only empties this list. Known secrets stay known.
+
+  **All history** shows the events of every session on this machine, grouped by session (date, project, session id), newest first, up to 400 events. It is kept in the plugin's store on disk: masks and the lines around, never a value or a hash (a short secret's hash could be brute-forced). Delete one session, or clear all of it.
 
   The pane is drawn for you alone and is never part of the model's context. **Don't paste a screenshot of it into the chat**: images reach the model, and secret-guard does not scan images.
 
@@ -119,7 +122,8 @@ What is verified (see [`tests/`](tests) and the live checks in [`docs/design.md`
 
 What it does not do:
 
-- **A short password with no keyword around it cannot be detected.** `84D83c3po!!!` alone looks like any other word: entropy can't separate short strings (a 12-character string has at most 3.6 bits per character, and so do ordinary words). Written as `пароль: 84D83c3po!!!` it is caught.
+- **Short passwords are left alone by design.** A word under 8 characters is not judged by its shape: such a password guards little anyway, and words that short read as random far too often. After a keyword (`пароль: …`) a value is caught from 6 characters.
+- **Shannon entropy can't tell a short password from a word.** A string of n characters has at most log₂(n) bits per character, so `planets` scores as high as a password. The random-word rule measures how often the kind of character changes instead. [`scripts/words_experiment.py`](scripts/words_experiment.py) reproduces the numbers on your own prompts and prints only word shapes (`aA9`), never a word.
 - **A password of letters only reads as a word** (`password: hunterHunter`), and a hex key looks like a commit hash. Both are let through, to keep the false positives down.
 - **The entropy rule is noisy on minified code**: about 8–19 false findings in a 0.3–4.5 MB minified bundle. Turn `entropyRule` off if your agent reads those a lot.
 - **WebFetch** hands the whole page to a small helper model before secret-guard sees the result. A secret on a fetched page reaches that model. Fetch with `curl` through Bash when that matters: there the output is checked before anything reads it.

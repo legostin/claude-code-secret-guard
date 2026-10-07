@@ -69,6 +69,10 @@ def main() -> None:
         'OpenAI project key': f'OPENAI_API_KEY=sk-proj-{rand(48)}',
         'token with no keyword, 40 chars': f'here you go: {rand(40)}',
         'GitHub token (default rule)': f'ghp_{rand(36)}',
+        'доступ к базе user:password': f'доступ к базе {rand(8).lower()}:{password(7)}',
+        'логин и пароль: admin:password': f'логин и пароль: admin:{password(10)}',
+        'creds for staging: deploy:password': f'creds for staging: deploy:{password(12)}',
+        'access to prod db root:password': f'access to prod db root:{password(9)}',
     }
     must_not_catch = {
         'password validation failed for user': 'password validation failed for user',
@@ -105,6 +109,15 @@ def main() -> None:
         'this rule\'s own source': 'regex = (?i)(?:пароль|парол[яюеи]|password|passwd|pwd|секрет|secret|токен|token|access key)[x]',
         'a keyword given as the value': 'password: password123',
         'keywords listed after a keyword': 'secret: token, password, passphrase',
+        'доступ к базе host:port': 'доступ к базе localhost:5432',
+        'access log with a timestamp': 'access log at 2024-01-01 11:42:07.123456',
+        'login page URL': 'login page at https://example.com/path',
+        'account: user:password (placeholder)': 'account: user:password',
+        'доступ открыт до 18:00': 'доступ открыт до 18:00',
+        'login form at host:port/path': 'login form at localhost:3000/login',
+        'access over IPv6': 'access over IPv6 2001:db8::1',
+        'access point MAC address': 'access point mac 00:1A:2B:3C:4D:5E',
+        'auth: env variable pair': 'auth: ${DB_USER}:${DB_PASS}',
         'an allowlist entry': "regexes = ['^\\$', '(?i)^(password|pass|secret|changeme|xxx+)$']",
     }
 

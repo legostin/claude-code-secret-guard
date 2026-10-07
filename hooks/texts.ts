@@ -103,6 +103,13 @@ export type Texts = {
     last: (time: string, source: string) => string
     forgetAll: string
     cutButton: string
+    tabSession: string
+    tabHistory: string
+    historyHint: string
+    historyNone: string
+    clearHistory: string
+    dropSession: string
+    sessionHeader: (date: string, project: string, session: string, count: number, isThis: boolean) => string
     allowButton: string
     forgetButton: string
   }
@@ -220,6 +227,14 @@ const EN: Texts = {
     last: (time, source) => `last ${time}, ${source}`,
     forgetAll: 'forget all',
     cutButton: 'cut again',
+    tabSession: 'This session',
+    tabHistory: 'All history',
+    historyHint: 'Every session on this machine, newest first, up to 400 events. Kept on disk: masks and the lines around, never a value or a hash.',
+    historyNone: 'No history yet.',
+    clearHistory: 'clear all history',
+    dropSession: 'delete',
+    sessionHeader: (date, project, session, count, isThis) =>
+      `${date} · ${project} · ${session}${isThis ? ' (this session)' : ''} · ${count} ${count === 1 ? 'event' : 'events'}`,
     allowButton: 'allow from now on',
     forgetButton: 'forget',
   },
@@ -322,6 +337,14 @@ const RU: Texts = {
     last: (time, source) => `последний раз ${time}, ${source}`,
     forgetAll: 'забыть все',
     cutButton: 'снова вырезать',
+    tabSession: 'Эта сессия',
+    tabHistory: 'Вся история',
+    historyHint: 'Все сессии на этой машине, новые сверху, до 400 событий. Хранится на диске: маски и строки вокруг, никогда не значения и не хэши.',
+    historyNone: 'Истории пока нет.',
+    clearHistory: 'очистить всю историю',
+    dropSession: 'удалить',
+    sessionHeader: (date, project, session, count, isThis) =>
+      `${date} · ${project} · ${session}${isThis ? ' (эта сессия)' : ''} · ${count} ${eventsRu(count)}`,
     allowButton: 'пропускать дальше',
     forgetButton: 'забыть',
   },
@@ -385,4 +408,21 @@ function timesRu(count: number): string {
   const hundred = count % 100
 
   return ten >= 2 && ten <= 4 && (hundred < 12 || hundred > 14) ? 'раза' : 'раз'
+}
+
+/** «событие», «события» or «событий», as Russian counts events. */
+function eventsRu(count: number): string {
+  const ten = count % 10
+  const hundred = count % 100
+  if (ten === 1 && hundred !== 11) return 'событие'
+
+  return ten >= 2 && ten <= 4 && (hundred < 12 || hundred > 14) ? 'события' : 'событий'
+}
+
+/** A day and time, as the history groups sessions: `07.10 11:42`. */
+export function stamp(at: number): string {
+  const date = new Date(at)
+  const two = (n: number) => String(n).padStart(2, '0')
+
+  return `${two(date.getDate())}.${two(date.getMonth() + 1)} ${two(date.getHours())}:${two(date.getMinutes())}`
 }

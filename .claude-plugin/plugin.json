@@ -1,6 +1,6 @@
 {
   "name": "secret-guard",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Keeps secrets out of Claude's context: gitleaks scans every tool output, prompt and attachment before the model reads it, and you decide what the model sees.",
   "author": {
     "name": "Legostin Vyacheslav",
@@ -39,6 +39,12 @@
       "type": "boolean",
       "title": "Entropy rule",
       "description": "Also catch long random-looking tokens with no known shape, by their Shannon entropy (about 93% of random 20-64 character tokens; some noise on minified code).",
+      "default": true
+    },
+    "wordRule": {
+      "type": "boolean",
+      "title": "Random words in prompts",
+      "description": "Also catch a random-looking word of 8 characters or more in your own prompt (a password typed with nothing around it), by how often its kind of character changes: about 75% of such passwords, a dialog on 0.2% of ordinary prompts. Prompts up to 2000 characters only: on code and pastes it would be too noisy.",
       "default": true
     }
   }

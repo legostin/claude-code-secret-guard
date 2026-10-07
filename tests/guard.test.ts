@@ -35,11 +35,28 @@ type World = {
   /** Whether the project has a .gitleaks.toml, and what the person's environment holds. */
   hasProjectConfig?: boolean
   variables?: Record<string, string>
+  /** What the plugin's store holds at the start, and every value written to it. */
+  store?: Record<string, unknown>
+  stored?: string[]
 }
 
 /** Stands for gitleaks, the dialog, a Bash run and the store beneath the plugin. */
 function world(on: On, w: World, output: string) {
   const clock = mock.clock(on, { now: 1_760_000_000_000 })
+  // The plugin's store, in memory, every value written kept for a test to read.
+  const store = new Map<string, unknown>(Object.entries(w.store ?? {}))
+  on('store.get', ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', ($, e) => {
+    ;(w.stored ??= []).push(JSON.stringify(e.value))
+    store.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    return { value: undefined }
+  })
+  on('store.delete', ($, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  on('session.id', () => ({ value: 'f00dcafe-1234-5678-9abc-def012345678' }))
   mock.env(on, w.variables ?? {})
   on('fs.exists', () => ({ value: w.hasProjectConfig === true }))
   on('ui.status', () => ({ value: undefined }))
@@ -490,5 +507,101 @@ describe('registry of secrets', () => {
     expect(JSON.stringify(read)).toContain('[SECRET:github-pat#2]')
     await $.tool.call({ tool: 'Bash', command: 'env' })
     expect(w.questions).toHaveLength(3)
+  })
+})
+
+describe('random words in a prompt', () => {
+  test('a password typed with nothing around it raises the dialog and is cut', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    let entered = ''
+    on('prompt.submit', ($, e) => {
+      entered = e.text
+      return { text: e.text }
+    })
+
+    await $.prompt.submit({ text: 'прод доступ Qx7mP2kw!!', wait: false, origin: { kind: 'composer' } })
+    expect(w.questions[0]).toContain('random-word')
+    expect(entered).toBe('прод доступ [SECRET:random-word#1]')
+  })
+
+  test('wordRule off: the prompt goes on as it is', { options: { wordRule: false } }, async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    let entered = ''
+    on('prompt.submit', ($, e) => {
+      entered = e.text
+      return { text: e.text }
+    })
+
+    await $.prompt.submit({ text: 'прод доступ Qx7mP2kw!!', wait: false, origin: { kind: 'composer' } })
+    expect(w.questions).toHaveLength(0)
+    expect(entered).toBe('прод доступ Qx7mP2kw!!')
+  })
+})
+
+describe('history across sessions', () => {
+  const earlier = {
+    history: [
+      {
+        id: 'beefbeef-0000:1',
+        session: 'beefbeef-0000',
+        project: 'shop',
+        at: 1_759_000_000_000,
+        label: 3,
+        source: 'Bash: cat .env',
+        rule: 'stripe-access-token',
+        mask: 'sk_l…[40]',
+        decision: 'redacted',
+        file: '.env',
+        line: 4,
+        isFileLine: true,
+        lines: [{ n: 4, text: 'STRIPE=[SECRET:stripe-access-token#3]', isHit: true }],
+      },
+    ],
+  }
+
+  test('the history tab shows this session and earlier ones, grouped, newest first', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [], store: earlier }
+    world(on, w, OUTPUT)
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    await ui.press({ key: 'tab-history' })
+    const headers = (await ui.findAll({ type: 'Text' })).map(one => one.text).filter(text => / · \d+ events?$/.test(text))
+    expect(headers).toHaveLength(2)
+    expect(headers[0]).toContain('project · f00dcafe (this session) · 1 event')
+    expect(headers[1]).toContain('shop · beefbeef · 1 event')
+    expect(await ui.find({ type: 'Text', text: /STRIPE=\[SECRET:stripe-access-token#3\]/ })).toBeDefined()
+    expect(JSON.stringify(await ui.drawn())).not.toContain(TOKEN)
+    await ui.unmount()
+  })
+
+  test('what is stored on disk holds no value and no hash', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+
+    const written = (w.stored ?? []).join('\n')
+    expect(written).toContain('github-pat')
+    expect(written).not.toContain(TOKEN)
+    expect(written).not.toContain('"hash"')
+  })
+
+  test('a session can be deleted from the history, and all of it cleared', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [], store: earlier }
+    world(on, w, OUTPUT)
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    await ui.press({ key: 'tab-history' })
+    await ui.press({ key: 'drop-session-beefbeef-0000' })
+    expect(await ui.find({ type: 'Text', text: /shop · beefbeef/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /this session/ })).toBeDefined()
+    await ui.press({ key: 'clear-history' })
+    expect(await ui.find({ type: 'Text', text: /No history yet/ })).toBeDefined()
+    await ui.press({ key: 'tab-session' })
+    expect(await ui.find({ type: 'Text', text: /Secrets this session \(1\)/ })).toBeDefined()
+    await ui.unmount()
   })
 })

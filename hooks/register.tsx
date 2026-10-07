@@ -15,9 +15,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, EventOf, Register, ToolCallResult } from 'claude-code'
 
-import type { Decision, Entry, Known } from '../types'
+import type { Decision, Entry, HistoryEntry, Known } from '../types'
 import { excerpt, hashOf, mapTexts, mask, parseReport, placeholder, redact, redactRecord, uniqueByHash } from './redact'
 import { configWith } from './rules'
+import { randomWords } from './words'
 import type { RuleSet } from './rules'
 import type { Cut, Found, Leak } from './redact'
 import {
@@ -30,6 +31,7 @@ import {
   NOTE,
   pathIn,
   shortPath,
+  stamp,
   textsFor,
   TOOL_FAILED,
   withheld,
@@ -44,6 +46,14 @@ const lastNumber = atom({ plugin: 'secret-guard', key: 'lastNumber' } as const, 
 const scanner = atom({ plugin: 'secret-guard', key: 'scanner' } as const, { status: 'unknown', detail: '' })
 const expanded = atom({ plugin: 'secret-guard', key: 'expanded' } as const, [])
 const revealed = atom({ plugin: 'secret-guard', key: 'revealed' } as const, [])
+const tab = atom({ plugin: 'secret-guard', key: 'tab' } as const, 'session')
+const openedHistory = atom({ plugin: 'secret-guard', key: 'openedHistory' } as const, [])
+const historyVersion = atom({ plugin: 'secret-guard', key: 'historyVersion' } as const, 0)
+
+// The history kept across sessions, in the plugin's store.
+const HISTORY_KEY = 'history'
+const HISTORY_KEPT = 400
+const HISTORY_SHOWN = 150
 
 const GITLEAKS_ARGS = [
   'stdin',
@@ -93,11 +103,14 @@ let t = textsFor('en')
 // The rules added to gitleaks' own (the keywordRules and entropyRule options),
 // and the environment that hands them to gitleaks, by project root.
 let ruleSet: RuleSet = { keywords: true, entropy: true }
+// Random-looking words in the person's prompts (the wordRule option).
+let isWordRuleOn = true
 const environments = new Map<string, Record<string, string>>()
 
 export const register: Register = (on, options) => {
   t = textsFor(options.language)
   ruleSet = { keywords: options.keywordRules !== false, entropy: options.entropyRule !== false }
+  isWordRuleOn = options.wordRule !== false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'secrets', description: t.commandDescription })
@@ -220,9 +233,10 @@ export const register: Register = (on, options) => {
       return { drop: t.promptDroppedFailure(result.reason) }
     }
 
-    const found = await unresolved($, result.leaks)
+    const leaks = isWordRuleOn ? withWords(result.leaks, e.text) : result.leaks
+    const found = await unresolved($, leaks)
     if (found.length === 0) return next(e)
-    const origin: Origin = { text: e.text, leaks: result.leaks }
+    const origin: Origin = { text: e.text, leaks }
     const { known, novel } = await splitKnown($, found)
     const choice = novel.length === 0 ? 'redact' : await ask($, t.promptQuestion(novel), t.promptOptions, 'redact', 'cancel')
     if (choice === 'cancel') {
@@ -396,6 +410,15 @@ async function probe($: EngineInterface): Promise<void> {
   }
   await update($, scanner, () => ({ status: 'missing', detail: t.missing }))
   await refreshStatus($)
+}
+
+/** gitleaks' leaks and the random-looking words it did not already cover. */
+function withWords(leaks: readonly Leak[], text: string): Leak[] {
+  const words = randomWords(text).filter(
+    word => !leaks.some(leak => leak.secret.includes(word.secret) || word.secret.includes(leak.secret)),
+  )
+
+  return [...leaks, ...words]
 }
 
 // --- what the model may read ----------------------------------------------
@@ -654,9 +677,10 @@ async function record(
 
     return next
   })
+  let added: Entry[] = []
   await update($, entries, list => {
     let seq = list.at(-1)?.seq ?? 0
-    const added: Entry[] = uniqueByHash(found).map(({ leak, hash }) => ({
+    added = uniqueByHash(found).map(({ leak, hash }) => ({
       seq: ++seq,
       label: numbers[hash] ?? 0,
       at,
@@ -670,18 +694,62 @@ async function record(
 
     return [...list, ...added].slice(-MAX_ENTRIES)
   })
+  await keepInHistory($, added)
   await refreshStatus($)
 }
 
 async function recordFailure($: EngineInterface, source: string, reason: string, decision: Decision): Promise<void> {
   const at = await $.clock.now()
+  let row: Entry | undefined
   await update($, entries, list => {
     const seq = (list.at(-1)?.seq ?? 0) + 1
-    const row: Entry = { seq, label: 0, at, source, rule: t.unavailable, mask: reason, hash: '', decision }
+    row = { seq, label: 0, at, source, rule: t.unavailable, mask: reason, hash: '', decision }
 
     return [...list, row].slice(-MAX_ENTRIES)
   })
+  await keepInHistory($, row === undefined ? [] : [row])
   await refreshStatus($)
+}
+
+/**
+ * Adds journal rows to the history kept across sessions: no hash, and only
+ * the lines around the secret. The history is a convenience: a store that
+ * fails or is full loses the event, never a check.
+ */
+async function keepInHistory($: EngineInterface, rows: readonly Entry[]): Promise<void> {
+  if (rows.length === 0) return
+  const session = await $.session.id()
+  const project = (await $.session.root()).split('/').filter(Boolean).at(-1) ?? ''
+  const kept: HistoryEntry[] = rows.map(({ hash: _hash, seq, lines, ...row }) => ({
+    ...row,
+    id: `${session}:${seq}`,
+    session,
+    project,
+    ...(lines === undefined ? {} : { lines: nearHits(lines) }),
+  }))
+  try {
+    const before = asHistory(await $.store.get(HISTORY_KEY))
+    await $.store.set(HISTORY_KEY, [...before, ...kept].slice(-HISTORY_KEPT))
+  } catch {
+    return
+  }
+  await update($, historyVersion, version => version + 1)
+}
+
+function asHistory(value: unknown): HistoryEntry[] {
+  return Array.isArray(value) ? (value as HistoryEntry[]) : []
+}
+
+/** The lines within AROUND_CLOSED of the secret, each cut to 200 characters. */
+function nearHits(lines: NonNullable<Entry['lines']>): NonNullable<Entry['lines']> {
+  const hits = lines.filter(line => line.isHit).map(line => line.n)
+  const from = Math.min(...hits) - AROUND_CLOSED
+  const to = Math.max(...hits) + AROUND_CLOSED
+  const clip = (text: string) => (text.length > 200 ? `${text.slice(0, 199)}…` : text)
+
+  return lines
+    .filter(line => line.n >= from && line.n <= to)
+    .map(line => ({ ...line, text: clip(line.text), ...(line.inFile === undefined ? {} : { inFile: clip(line.inFile) }) }))
 }
 
 async function refreshStatus($: EngineInterface): Promise<void> {
@@ -705,7 +773,10 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
   const registry = Object.values(await read($, known)).sort((a, b) => b.lastAt - a.lastAt)
   const state = await read($, scanner)
   const opened = new Set(await read($, expanded))
+  const openedPast = new Set(await read($, openedHistory))
   const shownValues = new Set(await read($, revealed))
+  const activeTab = await read($, tab)
+  await read($, historyVersion)
   const allowedBy = new Map(allowList.map(one => [one.hash, one.reason]))
   const width = Math.max(24, 'bodyColumns' in e.props && typeof e.props.bodyColumns === 'number' ? e.props.bodyColumns : 60)
   const shown = journal.slice(-50).reverse()
@@ -808,8 +879,7 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
     )
   }
 
-  const drawEntry = (entry: Entry) => {
-    const isOpen = opened.has(entry.seq)
+  const drawEntry = (entry: EntryView, key: string, isOpen: boolean, onToggle: () => unknown) => {
     const lines = entry.lines ?? []
     const hits = lines.filter(line => line.isHit)
     const firstHit = hits[0]?.n ?? 0
@@ -826,10 +896,11 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
     const legend = NOTHING.has(entry.decision) ? t.pane.legendNothing : SAW.has(entry.decision) ? t.pane.legendSaw : t.pane.legendRead
     const numberOf = (n: number) => (entry.isNumbered === true ? '' : `${String(n).padStart(4)}  `)
     const isUnread = NOTHING.has(entry.decision)
+    const hash = entry.hash === undefined || entry.hash === '' ? undefined : entry.hash
 
     return (
-      <Box key={`entry-${entry.seq}`} flexDirection="column" marginTop={1}>
-        <Button key={`open-${entry.seq}`} plain label={title} onPress={() => toggle(entry.seq)} />
+      <Box key={`entry-${key}`} flexDirection="column" marginTop={1}>
+        <Button key={`open-${key}`} plain label={title} onPress={onToggle} />
         <Text wrap="wrap" color={CUT.has(entry.decision) ? 'success' : 'warning'}>
           {t.decisions[entry.decision]}
         </Text>
@@ -842,7 +913,7 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
             {t.pane.fileLabel} {entry.filePath}
           </Text>
         )}
-        {entry.lines === undefined && entry.hash !== '' && (
+        {entry.lines === undefined && entry.rule !== t.unavailable && (
           <Text wrap="wrap" dimColor>
             {t.pane.noPlace}
           </Text>
@@ -853,7 +924,7 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
               {legend}
             </Text>
             {window.map(line => (
-              <Box key={`line-${entry.seq}-${line.n}`} flexDirection="column">
+              <Box key={`line-${key}-${line.n}`} flexDirection="column">
                 <Text wrap={isOpen ? 'wrap' : 'truncate-end'} dimColor={!line.isHit} bold={line.isHit}>
                   {line.isHit ? '› ' : '  '}
                   {numberOf(line.n)}
@@ -869,12 +940,12 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
             ))}
           </Box>
         )}
-        {entry.hash !== '' && drawValue(entry.hash)}
-        {entry.hash !== '' && (
+        {hash !== undefined && drawValue(hash)}
+        {hash !== undefined && (
           <Box flexDirection="row" gap={1} marginTop={1}>
-            {revealButton(entry.hash, `reveal-${entry.seq}`)}
-            {isOpen && ALLOWABLE.has(entry.decision) && !allowedBy.has(entry.hash) && (
-              <Button key={`allow-${entry.seq}`} label={t.pane.allowButton} onPress={() => allowHash(entry.hash, entry.rule, entry.mask)} />
+            {revealButton(hash, `reveal-${key}`)}
+            {isOpen && ALLOWABLE.has(entry.decision) && !allowedBy.has(hash) && (
+              <Button key={`allow-${key}`} label={t.pane.allowButton} onPress={() => allowHash(hash, entry.rule, entry.mask)} />
             )}
           </Box>
         )}
@@ -882,14 +953,83 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
     )
   }
 
-  return (
-    <Box flexDirection="column" width={width}>
+  const tabs = (
+    <Box flexDirection="row" gap={1} marginTop={1}>
+      <Button
+        key="tab-session"
+        label={t.pane.tabSession}
+        {...(activeTab === 'session' ? { variant: 'primary' as const } : {})}
+        onPress={() => update($, tab, () => 'session' as const)}
+      />
+      <Button
+        key="tab-history"
+        label={t.pane.tabHistory}
+        {...(activeTab === 'history' ? { variant: 'primary' as const } : {})}
+        onPress={() => update($, tab, () => 'history' as const)}
+      />
+    </Box>
+  )
+  const header = (
+    <Box flexDirection="column">
       <Text wrap="wrap" color={state.status === 'missing' ? 'error' : 'success'}>
         {state.status === 'missing' ? state.detail : t.pane.scanner(state.detail || 'gitleaks')}
       </Text>
       <Text wrap="wrap" dimColor>
         {t.pane.intro}
       </Text>
+      {tabs}
+    </Box>
+  )
+
+  if (activeTab === 'history') {
+    const thisSession = await $.session.id()
+    const past = asHistory(await $.store.get(HISTORY_KEY)).slice(-HISTORY_SHOWN)
+    const sessions = new Map<string, HistoryEntry[]>()
+    for (const one of past) sessions.set(one.session, [...(sessions.get(one.session) ?? []), one])
+    const groups = [...sessions.values()].sort((a, b) => (b.at(-1)?.at ?? 0) - (a.at(-1)?.at ?? 0))
+    const togglePast = (id: string) =>
+      update($, openedHistory, list => (list.includes(id) ? list.filter(one => one !== id) : [...list, id]))
+    const rewrite = async (keep: (one: HistoryEntry) => boolean) => {
+      const all = asHistory(await $.store.get(HISTORY_KEY))
+      await $.store.set(HISTORY_KEY, all.filter(keep))
+      await update($, historyVersion, version => version + 1)
+    }
+
+    return (
+      <Box flexDirection="column" width={width}>
+        {header}
+        <Box flexDirection="row" marginTop={1} justifyContent="space-between">
+          <Text bold>{t.pane.tabHistory}</Text>
+          {past.length > 0 && <Button key="clear-history" label={t.pane.clearHistory} onPress={() => rewrite(() => false)} />}
+        </Box>
+        <Text wrap="wrap" dimColor>
+          {t.pane.historyHint}
+        </Text>
+        {groups.length === 0 && <Text dimColor>{t.pane.historyNone}</Text>}
+        {groups.map(group => {
+          const first = group[0]
+          if (first === undefined) return undefined
+          const session = first.session
+
+          return (
+            <Box key={`session-${session}`} flexDirection="column" marginTop={2}>
+              <Box flexDirection="row" justifyContent="space-between">
+                <Text wrap="wrap" bold color="accent">
+                  {t.pane.sessionHeader(stamp(first.at), first.project, session.slice(0, 8), group.length, session === thisSession)}
+                </Text>
+                <Button key={`drop-session-${session}`} label={t.pane.dropSession} onPress={() => rewrite(one => one.session !== session)} />
+              </Box>
+              {[...group].reverse().map(one => drawEntry(one, `h-${one.id}`, openedPast.has(one.id), () => togglePast(one.id)))}
+            </Box>
+          )
+        })}
+      </Box>
+    )
+  }
+
+  return (
+    <Box flexDirection="column" width={width}>
+      {header}
 
       <Box flexDirection="row" marginTop={1} justifyContent="space-between">
         <Text bold>{t.pane.secrets(registry.length)}</Text>
@@ -909,10 +1049,13 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
         {t.pane.logHint}
       </Text>
       {shown.length === 0 && <Text dimColor>{t.pane.none}</Text>}
-      {shown.map(drawEntry)}
+      {shown.map(entry => drawEntry(entry, String(entry.seq), opened.has(entry.seq), () => toggle(entry.seq)))}
     </Box>
   )
 }
+
+/** A journal row or a history event, as the pane draws either. */
+type EntryView = Omit<Entry, 'hash' | 'seq'> & { hash?: string }
 
 /** A line as the pane draws it: tabs (a Read's numbering) as spaces. */
 function tidy(text: string): string {
