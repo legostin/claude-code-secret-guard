@@ -17,6 +17,8 @@ import type { EngineInterface, EventOf, Register, ToolCallResult } from 'claude-
 
 import type { Decision, Entry } from '../types'
 import { excerpt, hashOf, mapTexts, mask, parseReport, placeholder, redact, redactRecord, uniqueByHash } from './redact'
+import { configWith } from './rules'
+import type { RuleSet } from './rules'
 import type { Cut, Found, Leak } from './redact'
 import {
   clock,
@@ -88,9 +90,14 @@ const REVEAL_MS = 30_000
 let gitleaks: string | undefined
 // What the person reads, in the language the `language` option names.
 let t = textsFor('en')
+// The rules added to gitleaks' own (the keywordRules and entropyRule options),
+// and the environment that hands them to gitleaks, by project root.
+let ruleSet: RuleSet = { keywords: true, entropy: true }
+const environments = new Map<string, Record<string, string>>()
 
 export const register: Register = (on, options) => {
   t = textsFor(options.language)
+  ruleSet = { keywords: options.keywordRules !== false, entropy: options.entropyRule !== false }
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'secrets', description: t.commandDescription })
@@ -317,11 +324,12 @@ async function scanText($: EngineInterface, text: string): Promise<ScanResult> {
   if (hit !== undefined) return { isScanned: true, leaks: hit }
 
   const cwd = await $.session.root()
+  const env = await gitleaksEnvironment($, cwd)
   let reason = t.notFound
   for (const bin of gitleaks === undefined ? GITLEAKS_PATHS : [gitleaks]) {
     let ran
     try {
-      ran = await $.process.run([bin, ...GITLEAKS_ARGS], { cwd, stdin: text, timeoutMs: 20_000 })
+      ran = await $.process.run([bin, ...GITLEAKS_ARGS], { cwd, env, stdin: text, timeoutMs: 20_000 })
     } catch (error) {
       reason = `${bin}: ${messageOf(error)}`
       continue
@@ -348,6 +356,26 @@ async function scanText($: EngineInterface, text: string): Promise<ScanResult> {
   gitleaks = undefined
 
   return { isScanned: false, reason }
+}
+
+/**
+ * The environment gitleaks runs in: the guard's rules, as GITLEAKS_CONFIG_TOML,
+ * over the project's `.gitleaks.toml` when there is one (gitleaks would read
+ * that file otherwise) and over the default set when not. A GITLEAKS_CONFIG
+ * the person set outranks it, so then the guard adds nothing and theirs rules.
+ */
+async function gitleaksEnvironment($: EngineInterface, root: string): Promise<Record<string, string>> {
+  const kept = environments.get(root)
+  if (kept !== undefined) return kept
+  let env: Record<string, string> = {}
+  if ((ruleSet.keywords || ruleSet.entropy) && (await $.env.get('GITLEAKS_CONFIG')) === undefined) {
+    const own = `${root}/.gitleaks.toml`
+    const base = (await $.fs.exists(own)) ? own : undefined
+    env = { GITLEAKS_CONFIG_TOML: configWith(base, ruleSet) }
+  }
+  environments.set(root, env)
+
+  return env
 }
 
 /** Finds the installed gitleaks and says so in the pane and status line. */

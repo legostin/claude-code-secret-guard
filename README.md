@@ -40,6 +40,19 @@ secret-guard puts a checkpoint between your machine and the model:
 
 gitleaks also decodes base64, hex and percent-encoding (up to 5 levels), so `cat .env | base64` is caught too. A line that carries an encoded secret is withheld as a whole.
 
+### Detection
+
+gitleaks' default rules (about 200 known token shapes: `ghp_…`, `sk_live_…`, AWS keys, private keys…) are built for repositories. A conversation leaks differently, so secret-guard adds two layers of its own, each with an option:
+
+| Layer | Catches | Option |
+|---|---|---|
+| **Keyword rules** | a value after *пароль / password / pwd / passphrase / секрет / secret / токен / token / ключ доступа / access key*, in English or Russian, with up to three words before a separator (`пароль от прод базы: …`, `the password is …`); a password in a URL (`postgres://user:…@host`); a `Bearer` token; `sk-proj-` keys | `keywordRules` |
+| **Entropy rule** | a long random-looking token with no known shape, by its Shannon entropy (20–128 characters, upper and lower case and digits, ≥ 4.0 bits per character): about **93%** of random 20–64-character tokens | `entropyRule` |
+
+Words, numbers, code (`getenv(…)`), templates (`${X}`), markup, hashes, UUIDs, SRI values, paths and secret-guard's own placeholders are not treated as secrets. Both layers extend your project's `.gitleaks.toml` when it has one. A `GITLEAKS_CONFIG` you set yourself takes precedence, and then the extra layers are left out.
+
+[`scripts/check_rules.py`](scripts/check_rules.py) checks the rules against real gitleaks in CI: 13 phrases that must be caught, 28 that must not (taken from real Claude Code sessions, lockfiles and git logs), and the entropy rule's recall.
+
 A secret you have already cut once is cut again silently. You are asked again only when a *new* secret shows up.
 
 ## Install
@@ -99,7 +112,11 @@ What is verified (see [`tests/`](tests) and the live checks in [`docs/design.md`
 
 What it does not do:
 
-- **It is a pattern scanner.** It finds what gitleaks' rules and entropy checks find (around 200 rule types). A password with no recognizable shape, or a secret split across several outputs, can get through.
+- **A short password with no keyword around it cannot be detected.** `84D83c3po!!!` alone looks like any other word: entropy can't separate short strings (a 12-character string has at most 3.6 bits per character, and so do ordinary words). Written as `пароль: 84D83c3po!!!` it is caught.
+- **A password of letters only reads as a word** (`password: hunterHunter`), and a hex key looks like a commit hash. Both are let through, to keep the false positives down.
+- **The entropy rule is noisy on minified code**: about 8–19 false findings in a 0.3–4.5 MB minified bundle. Turn `entropyRule` off if your agent reads those a lot.
+- **WebFetch** hands the whole page to a small helper model before secret-guard sees the result. A secret on a fetched page reaches that model. Fetch with `curl` through Bash when that matters: there the output is checked before anything reads it.
+- **A secret split across several outputs** can get through.
 - **Images and screenshots are not scanned.**
 - **"Let the model see it" means exactly that.** Once you pass a value, the model has it.
 - The terminal may briefly *draw* a tool's raw output before it is rewritten. That happens on your screen only: the model and the transcript never get that form.

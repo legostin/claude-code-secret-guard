@@ -30,16 +30,24 @@ type World = {
   isScannerBroken?: boolean
   questions: string[]
   rows?: unknown[]
+  /** The environment each gitleaks scan ran with. */
+  envs?: Record<string, string>[]
+  /** Whether the project has a .gitleaks.toml, and what the person's environment holds. */
+  hasProjectConfig?: boolean
+  variables?: Record<string, string>
 }
 
 /** Stands for gitleaks, the dialog, a Bash run and the store beneath the plugin. */
 function world(on: On, w: World, output: string) {
   const clock = mock.clock(on, { now: 1_760_000_000_000 })
+  mock.env(on, w.variables ?? {})
+  on('fs.exists', () => ({ value: w.hasProjectConfig === true }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('process.run', ($, e) => {
     if (w.isScannerBroken) throw new Error('spawn gitleaks ENOENT')
     if (e.argv[1] === 'version') return { value: ran('8.30.1\n') }
+    ;(w.envs ??= []).push({ ...(e.init?.env ?? {}) })
 
     return { value: ran(report(e.init?.stdin ?? '')) }
   })
@@ -348,5 +356,52 @@ describe('system prompt', () => {
     expect(text).toContain('Deploy token: [SECRET:github-pat#1]')
     expect(composed.sections.at(-1)?.id).toBe('secret-guard')
     expect(w.questions).toHaveLength(0)
+  })
+})
+
+describe('gitleaks rules', () => {
+  test('a scan runs with the extra rules over the default set', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+
+    const config = w.envs?.[0]?.GITLEAKS_CONFIG_TOML ?? ''
+    expect(config).toContain('useDefault = true')
+    expect(config).toContain('id = "password-after-keyword"')
+    expect(config).toContain('id = "high-entropy-token"')
+  })
+
+  test('over the project\'s own .gitleaks.toml when it has one', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [], hasProjectConfig: true }
+    world(on, w, OUTPUT)
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+
+    expect(w.envs?.[0]?.GITLEAKS_CONFIG_TOML).toContain("path = '/project/.gitleaks.toml'")
+  })
+
+  test('entropyRule off leaves the entropy rule out', { options: { entropyRule: false } }, async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+
+    const config = w.envs?.[0]?.GITLEAKS_CONFIG_TOML ?? ''
+    expect(config).toContain('id = "password-after-keyword"')
+    expect(config).not.toContain('id = "high-entropy-token"')
+  })
+
+  test('both off: gitleaks runs as it is', { options: { keywordRules: false, entropyRule: false } }, async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+
+    expect(w.envs?.[0]?.GITLEAKS_CONFIG_TOML).toBeUndefined()
+  })
+
+  test("a GITLEAKS_CONFIG the person set is left to rule", async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [], variables: { GITLEAKS_CONFIG: '/etc/gitleaks.toml' } }
+    world(on, w, OUTPUT)
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+
+    expect(w.envs?.[0]?.GITLEAKS_CONFIG_TOML).toBeUndefined()
   })
 })

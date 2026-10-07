@@ -1,0 +1,29 @@
+# secret-guard: a long random-looking token with no known shape, by its
+# Shannon entropy (bits per character) and its mix of upper case, lower case
+# and digits. Short passwords cannot be told from words this way (a string of
+# n characters has at most log2(n) bits per character): rules/keywords.toml
+# covers those. Hex strings (hashes, digests), UUIDs, SRI integrity values,
+# paths, dotted names (property access in code) and alphabets are not tokens.
+
+[[rules]]
+id = "high-entropy-token"
+description = "A long random-looking token with no known shape"
+regex = '''(?:^|[\s"'`=:(,\[{])([A-Za-z0-9_+/~.-]{20,128}={0,2})(?:$|[\s"'`;,)\]}&])'''
+secretGroup = 1
+entropy = 4.0
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = [
+  '''^[^A-Z]*$''',
+  '''^[^a-z]*$''',
+  '''^[^0-9]*$''',
+  '''\.''',
+  '''^[0-9a-fA-F._-]+$''',
+  '''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-''',
+  '''(?i)^(sha1|sha256|sha384|sha512|md5)[-:]''',
+  '''^/*[\w.-]*(/[\w.@+-]+){2,}/?$''',
+  '''^//''',
+  '''ABCDEFGHIJ|abcdefghij|0123456789''',
+  '''^[\w-]+(\.[\w-]+){2,}$''',
+  '''(?i)^(https?|file|git|ssh)[:/]''',
+]

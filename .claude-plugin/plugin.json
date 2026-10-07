@@ -1,6 +1,6 @@
 {
   "name": "secret-guard",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Keeps secrets out of Claude's context: gitleaks scans every tool output, prompt and attachment before the model reads it, and you decide what the model sees.",
   "author": {
     "name": "Legostin Vyacheslav",
@@ -28,6 +28,18 @@
         "en",
         "ru"
       ]
+    },
+    "keywordRules": {
+      "type": "boolean",
+      "title": "Keyword rules",
+      "description": "Also catch what gitleaks' default rules miss in a conversation: a value after пароль / password / token / secret (English and Russian), a password in a URL, a Bearer token, sk-proj- keys.",
+      "default": true
+    },
+    "entropyRule": {
+      "type": "boolean",
+      "title": "Entropy rule",
+      "description": "Also catch long random-looking tokens with no known shape, by their Shannon entropy (about 93% of random 20-64 character tokens; some noise on minified code).",
+      "default": true
     }
   }
 }
