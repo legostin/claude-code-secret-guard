@@ -54,7 +54,7 @@ secret-guard never scans its own marks: placeholders and masks reach gitleaks as
 
 [`scripts/check_rules.py`](scripts/check_rules.py) checks the rules against real gitleaks in CI: 26 phrases that must be caught, 64 that must not (taken from real Claude Code sessions, lockfiles and git logs), and the entropy rule's recall.
 
-A secret you have already cut once is cut again silently. You are asked again only when a *new* secret shows up.
+A secret you have already cut once is cut again silently, and wherever it shows up verbatim, even where no rule would see it (a shell echoing a typed password in `command not found: …`). You are asked again only when a *new* secret shows up.
 
 ## Install
 

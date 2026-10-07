@@ -347,7 +347,7 @@ async function scanText($: EngineInterface, text: string): Promise<ScanResult> {
   if (text.length < MIN_LENGTH) return { isScanned: true, leaks: [] }
   const key = await hashOf(text)
   const hit = scans.get(key)
-  if (hit !== undefined) return { isScanned: true, leaks: hit }
+  if (hit !== undefined) return { isScanned: true, leaks: await knownIn($, text, hit) }
 
   const cwd = await $.session.root()
   const env = await gitleaksEnvironment($, cwd)
@@ -377,7 +377,7 @@ async function scanText($: EngineInterface, text: string): Promise<ScanResult> {
       await refreshStatus($)
     }
 
-    return { isScanned: true, leaks }
+    return { isScanned: true, leaks: await knownIn($, text, leaks) }
   }
   gitleaks = undefined
 
@@ -402,6 +402,28 @@ async function gitleaksEnvironment($: EngineInterface, root: string): Promise<Re
   environments.set(root, env)
 
   return env
+}
+
+/**
+ * The scan's leaks, and the values cut before that stand in `text` as they
+ * are: a secret cut once is cut wherever it shows again, a shell's echo of a
+ * typed password ("command not found: …") included, where no rule would see
+ * it. Values are kept in this module's memory alone (see `values`).
+ */
+async function knownIn($: EngineInterface, text: string, leaks: readonly Leak[]): Promise<Leak[]> {
+  if (values.size === 0) return [...leaks]
+  const registry = await read($, known)
+  const extra: Leak[] = []
+  for (const [hash, value] of values) {
+    const one = registry[hash]
+    const at = text.indexOf(value)
+    if (one === undefined || one.number === 0 || value.length < 4 || at < 0) continue
+    if (leaks.some(leak => leak.secret.includes(value))) continue
+    const startLine = text.slice(0, at).split('\n').length
+    extra.push({ rule: one.rule, secret: value, startLine, endLine: startLine + value.split('\n').length - 1, isEncoded: false })
+  }
+
+  return [...leaks, ...extra]
 }
 
 /** Finds the installed gitleaks and says so in the pane and status line. */

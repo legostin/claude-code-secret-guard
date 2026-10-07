@@ -726,3 +726,26 @@ describe('the record of a ! command', () => {
     expect(await append($, w, 'build id Hz5kq2W9xR done')).toContain('Hz5kq2W9xR')
   })
 })
+
+describe('a value cut once', () => {
+  test('is cut wherever it shows again, where no rule would see it', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    on('prompt.submit', ($, e) => ({ text: e.text }))
+    await $.prompt.submit({ text: 'прод доступ Hz5kq2W9xR', wait: false, origin: { kind: 'composer' } })
+
+    // a shell's echo of it: the random-word rule does not run on output
+    const row = await append($, w, '<bash-stderr>zsh: command not found: Hz5kq2W9xR</bash-stderr>')
+    expect(row).not.toContain('Hz5kq2W9xR')
+    expect(row).toContain('command not found: [SECRET:random-word#1]')
+  })
+
+  test('once allowed, it is left where it shows', async ($, on) => {
+    const w: World = { answer: 'Let the model see it', questions: [] }
+    world(on, w, OUTPUT)
+    const ran = await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+    expect(ran.text).toContain(TOKEN)
+
+    expect(await append($, w, `echo: ${TOKEN}`)).toContain(TOKEN)
+  })
+})
