@@ -40,6 +40,7 @@ const allowed = atom({ plugin: 'secret-guard', key: 'allowed' } as const, [])
 const labels = atom({ plugin: 'secret-guard', key: 'labels' } as const, {})
 const scanner = atom({ plugin: 'secret-guard', key: 'scanner' } as const, { status: 'unknown', detail: '' })
 const expanded = atom({ plugin: 'secret-guard', key: 'expanded' } as const, [])
+const revealed = atom({ plugin: 'secret-guard', key: 'revealed' } as const, [])
 
 const GITLEAKS_ARGS = [
   'stdin',
@@ -65,6 +66,8 @@ const CUT: ReadonlySet<Decision> = new Set(['redacted', 'recut', 'hidden', 'drop
 const MODEL_READ: ReadonlySet<Decision> = new Set(['redacted', 'recut', 'auto-redacted'])
 const SAW: ReadonlySet<Decision> = new Set(['passed', 'allowlisted'])
 const NOTHING: ReadonlySet<Decision> = new Set(['hidden', 'dropped', 'withheld'])
+// Lines shown around a finding before it is opened; opened, all that were kept.
+const AROUND_CLOSED = 3
 
 type ScanResult = { isScanned: true; leaks: Leak[] } | { isScanned: false; reason: string }
 
@@ -76,6 +79,12 @@ type Origin = { text: string; leaks: readonly Leak[]; file?: string; isFileText?
 const scans = new Map<string, Leak[]>()
 // Texts the person let through unchecked when the scanner failed.
 const passedTexts = new Set<string>()
+// The values the journal's secrets had, by hash, for the person to see in the
+// pane on request. Here alone: never in $.state, the store or a dialog, and
+// gone when the module reloads.
+const values = new Map<string, string>()
+const VALUES_KEPT = 200
+const REVEAL_MS = 30_000
 let gitleaks: string | undefined
 // What the person reads, in the language the `language` option names.
 let t = textsFor('en')
@@ -568,9 +577,15 @@ async function record(
       ...(where.file === undefined ? {} : { file: shortPath(where.file, root), filePath: where.file }),
       line: where.line,
       isFileLine: where.isFileLine,
+      isNumbered: where.isNumbered,
       lines: where.lines,
     }
   }
+  for (const { leak, hash } of found) {
+    values.delete(hash)
+    values.set(hash, leak.secret)
+  }
+  while (values.size > VALUES_KEPT) values.delete(values.keys().next().value ?? '')
   await update($, entries, list => {
     let seq = list.at(-1)?.seq ?? 0
     const added: Entry[] = uniqueByHash(found).map(({ leak, hash }) => ({
@@ -620,12 +635,18 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
   const allowList = await read($, allowed)
   const state = await read($, scanner)
   const opened = new Set(await read($, expanded))
+  const shownValues = new Set(await read($, revealed))
   const allowedHashes = new Set(allowList.map(one => one.hash))
   const width = Math.max(24, 'bodyColumns' in e.props && typeof e.props.bodyColumns === 'number' ? e.props.bodyColumns : 60)
   const shown = journal.slice(-50).reverse()
 
   const toggle = (seq: number) =>
     update($, expanded, list => (list.includes(seq) ? list.filter(one => one !== seq) : [...list, seq]))
+  const hideValue = (seq: number) => update($, revealed, list => list.filter(one => one !== seq))
+  const showValue = async (seq: number) => {
+    await update($, revealed, list => (list.includes(seq) ? list : [...list, seq]))
+    $.clock.after(REVEAL_MS, () => hideValue(seq))
+  }
   const allowEntry = (entry: Entry) =>
     update($, allowed, list =>
       list.some(one => one.hash === entry.hash)
@@ -635,12 +656,19 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
   const clear = async () => {
     await update($, entries, () => [])
     await update($, expanded, () => [])
+    await update($, revealed, () => [])
+    values.clear()
     await refreshStatus($)
   }
 
   const drawEntry = (entry: Entry) => {
     const isOpen = opened.has(entry.seq)
-    const hits = (entry.lines ?? []).filter(line => line.isHit)
+    const lines = entry.lines ?? []
+    const hits = lines.filter(line => line.isHit)
+    const firstHit = hits[0]?.n ?? 0
+    const lastHit = hits.at(-1)?.n ?? 0
+    const reach = isOpen ? Infinity : AROUND_CLOSED
+    const window = lines.filter(line => line.n >= firstHit - reach && line.n <= lastHit + reach)
     const place =
       entry.line === undefined
         ? undefined
@@ -648,6 +676,11 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
           ? t.pane.at(entry.file, entry.line)
           : `${entry.file === undefined ? '' : `${entry.file} · `}${t.pane.textLine(entry.line)}`
     const title = `${isOpen ? '▾' : '▸'} ${clock(entry.at)}  ${entry.rule}${entry.label > 0 ? ` #${entry.label}` : ''}  ${entry.mask}`
+    const legend = NOTHING.has(entry.decision) ? t.pane.legendNothing : SAW.has(entry.decision) ? t.pane.legendSaw : t.pane.legendRead
+    const numberOf = (n: number) => (entry.isNumbered === true ? '' : `${String(n).padStart(4)}  `)
+    const isUnread = NOTHING.has(entry.decision)
+    const value = entry.hash === '' ? undefined : values.get(entry.hash)
+    const isShown = shownValues.has(entry.seq) && value !== undefined
 
     return (
       <Box key={`entry-${entry.seq}`} flexDirection="column" marginTop={1}>
@@ -656,9 +689,12 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
           {t.decisions[entry.decision]}
         </Text>
         {place !== undefined && <Text wrap={isOpen ? 'wrap' : 'truncate-middle'}>{place}</Text>}
-        {!isOpen && (
-          <Text wrap="truncate-end" dimColor>
-            {entry.source}
+        <Text wrap={isOpen ? 'wrap' : 'truncate-end'} dimColor>
+          {isOpen ? `${t.pane.sourceLabel} ${entry.source}` : entry.source}
+        </Text>
+        {isOpen && entry.filePath !== undefined && (
+          <Text wrap="wrap" dimColor>
+            {t.pane.fileLabel} {entry.filePath}
           </Text>
         )}
         {entry.lines === undefined && entry.hash !== '' && (
@@ -666,32 +702,50 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
             {t.pane.noPlace}
           </Text>
         )}
-        {hits.length > 0 && (
-          <Text wrap="wrap" dimColor>
-            {NOTHING.has(entry.decision) ? t.pane.modelNothing : SAW.has(entry.decision) ? t.pane.sawLine : t.pane.modelLine}
-          </Text>
-        )}
-        {hits.map((line, index) => (
-          <Text key={`hit-${entry.seq}-${index}`} wrap={isOpen ? 'wrap' : 'truncate-end'} bold>
-            {'› '}
-            {tidy(line.text).trimStart()}
-          </Text>
-        ))}
-        {isOpen && (
+        {window.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
-            <Text dimColor>{t.pane.sourceLabel}</Text>
-            <Text wrap="wrap">{entry.source}</Text>
-            {entry.filePath !== undefined && <Text dimColor>{t.pane.fileLabel}</Text>}
-            {entry.filePath !== undefined && <Text wrap="wrap">{entry.filePath}</Text>}
-            {(entry.lines?.length ?? 0) > hits.length && <Text dimColor>{t.pane.around}</Text>}
-            {(entry.lines?.length ?? 0) > hits.length &&
-              (entry.lines ?? []).map((line, index) => (
-                <Text key={`line-${entry.seq}-${index}`} wrap="wrap" dimColor={!line.isHit} bold={line.isHit}>
+            <Text wrap="wrap" dimColor>
+              {legend}
+            </Text>
+            {window.map(line => (
+              <Box key={`line-${entry.seq}-${line.n}`} flexDirection="column">
+                <Text wrap={isOpen ? 'wrap' : 'truncate-end'} dimColor={!line.isHit} bold={line.isHit}>
                   {line.isHit ? '› ' : '  '}
-                  {tidy(line.text)}
+                  {numberOf(line.n)}
+                  {tidy(isUnread ? (line.inFile ?? line.text) : line.text)}
                 </Text>
-              ))}
-            {ALLOWABLE.has(entry.decision) && entry.hash !== '' && !allowedHashes.has(entry.hash) && (
+                {line.isHit && !isUnread && line.inFile !== undefined && (
+                  <Text wrap={isOpen ? 'wrap' : 'truncate-end'} color="warning">
+                    {'  '}
+                    {entry.file === undefined ? t.pane.inText : t.pane.inFile} {tidy(line.inFile).trimStart()}
+                  </Text>
+                )}
+              </Box>
+            ))}
+          </Box>
+        )}
+        {isShown && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text wrap="wrap" color="warning" bold>
+              {t.pane.valueLabel} {value}
+            </Text>
+            <Text wrap="wrap" dimColor>
+              {t.pane.valueWarning}
+            </Text>
+          </Box>
+        )}
+        {entry.hash !== '' && (
+          <Box flexDirection="row" gap={1} marginTop={isShown ? 0 : 1}>
+            {value === undefined ? (
+              <Text dimColor>{t.pane.valueGone}</Text>
+            ) : (
+              <Button
+                key={`reveal-${entry.seq}`}
+                label={isShown ? t.pane.hideValue : t.pane.showValue}
+                onPress={() => (isShown ? hideValue(entry.seq) : showValue(entry.seq))}
+              />
+            )}
+            {isOpen && ALLOWABLE.has(entry.decision) && !allowedHashes.has(entry.hash) && (
               <Button key={`allow-${entry.seq}`} label={t.pane.allowButton} onPress={() => allowEntry(entry)} />
             )}
           </Box>

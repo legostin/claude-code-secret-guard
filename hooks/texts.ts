@@ -78,13 +78,19 @@ export type Texts = {
     none: string
     at: (file: string, line: number) => string
     textLine: (line: number) => string
-    modelLine: string
-    sawLine: string
-    modelNothing: string
+    legendRead: string
+    legendSaw: string
+    legendNothing: string
+    inFile: string
+    inText: string
     sourceLabel: string
     fileLabel: string
-    around: string
     noPlace: string
+    showValue: string
+    hideValue: string
+    valueLabel: string
+    valueWarning: string
+    valueGone: string
     clear: string
     allowlist: (count: number) => string
     allowEmpty: string
@@ -183,13 +189,19 @@ const EN: Texts = {
     none: 'Nothing found yet.',
     at: (file, line) => `${file}:${line}`,
     textLine: line => `line ${line} of the output`,
-    modelLine: 'The line, as the model read it:',
-    sawLine: 'The line (the value is masked here; the model saw it):',
-    modelNothing: 'The model read none of this output.',
+    legendRead: 'As the model read it (› the line with the secret):',
+    legendSaw: 'The model saw the value; here it is masked (› the line with the secret):',
+    legendNothing: 'The model read none of this; the text was, values masked (› the line with the secret):',
+    inFile: 'in the file:',
+    inText: 'in the output:',
     sourceLabel: 'Source:',
     fileLabel: 'File:',
-    around: 'Around it, as the model read it:',
     noPlace: 'Recorded by an earlier version: no file or lines kept.',
+    showValue: 'show the value',
+    hideValue: 'hide the value',
+    valueLabel: 'Value:',
+    valueWarning: 'Only you see this pane; the model does not. It hides again in 30 s. Do not paste a screenshot of it into the chat: images reach the model and are not checked.',
+    valueGone: 'value not kept (the mod reloaded)',
     clear: 'clear the journal',
     allowlist: count => `Allowlist (${count})`,
     allowEmpty: 'Empty: the model sees none of the values found.',
@@ -273,13 +285,19 @@ const RU: Texts = {
     none: 'Пока ничего не найдено.',
     at: (file, line) => `${file}:${line}`,
     textLine: line => `строка ${line} вывода`,
-    modelLine: 'Строка в том виде, в каком её прочитала модель:',
-    sawLine: 'Строка (значение здесь замаскировано; модель его видела):',
-    modelNothing: 'Модель не получила ничего из этого вывода.',
+    legendRead: 'Так это прочитала модель (› строка с секретом):',
+    legendSaw: 'Модель видела значение; здесь оно замаскировано (› строка с секретом):',
+    legendNothing: 'Модель ничего из этого не получила; текст был таким, значения замаскированы (› строка с секретом):',
+    inFile: 'в файле:',
+    inText: 'в выводе:',
     sourceLabel: 'Источник:',
     fileLabel: 'Файл:',
-    around: 'Вокруг, в том виде, в каком прочитала модель:',
     noPlace: 'Записано прошлой версией: файл и строки не сохранены.',
+    showValue: 'показать значение',
+    hideValue: 'скрыть значение',
+    valueLabel: 'Значение:',
+    valueWarning: 'Эту панель видите только вы, модель её не получает. Через 30 с значение снова скроется. Не вставляйте скриншот панели в чат: картинки уходят модели и не проверяются.',
+    valueGone: 'значение не сохранено (мод перезагружался)',
     clear: 'очистить журнал',
     allowlist: count => `Allowlist (${count})`,
     allowEmpty: 'Пусто: модель не видит ни одного найденного значения.',

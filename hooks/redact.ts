@@ -165,16 +165,21 @@ function everyString(value: unknown, test: (text: string) => boolean): boolean {
   return true
 }
 
-/** One line of an excerpt, as the pane shows it. */
-export type ExcerptLine = { text: string; isHit: boolean }
+/**
+ * One line of an excerpt: `text` as the model read it, `inFile` as the text
+ * holds it with the value masked, when the two differ.
+ */
+export type ExcerptLine = { n: number; text: string; isHit: boolean; inFile?: string }
 
-/** Where a leak stands and the lines around it, every secret masked. */
+/** Where a leak stands and the lines around it, never a value. */
 export type Excerpt = {
   /** The file the lines come from, when the text says which. */
   file?: string
   /** The line in that file, or else in the text. */
   line: number
   isFileLine: boolean
+  /** The lines carry their own numbers (a Read's, a Grep's); else `n` numbers them. */
+  isNumbered: boolean
   lines: ExcerptLine[]
 }
 
@@ -185,10 +190,11 @@ const GREP = /^([^\s:]*[/.][^\s:]*):(\d+)[:-]/
 const EXCERPT_LINE = 240
 
 /**
- * The lines around `hit` in `text` as the model read them: each leak shown
- * by `labelOf` (its placeholder where the model read one, its mask where it
- * saw the value), so the pane never shows a value. A line a secret could
- * still be read from is dropped to `[…]`.
+ * The lines around `hit` in `text`, each twice over: as the model read it,
+ * every leak shown by `labelOf` (its placeholder where it was cut, its mask
+ * where the model may read the value), and as the text holds it with every
+ * value masked. The pane never shows a value: a line one could still be read
+ * from is dropped to `[…]`.
  */
 export function excerpt(
   text: string,
@@ -196,7 +202,7 @@ export function excerpt(
   hit: Leak,
   labelOf: (leak: Leak, isEncodedLine: boolean) => string,
   where: { file?: string; isFileText?: boolean } = {},
-  around = 2,
+  around = 6,
 ): Excerpt {
   const lines = text.split('\n').map(line => line.replace(/\r$/, ''))
   const start = Math.min(Math.max(1, hit.startLine), lines.length)
@@ -204,43 +210,52 @@ export function excerpt(
   const from = Math.max(1, start - around)
   const to = Math.min(lines.length, end + around)
 
-  const needles: Needle[] = []
+  const asRead: Needle[] = []
+  const asHeld: Needle[] = []
   const pieces: string[] = []
   for (const leak of leaks) {
-    const label = labelOf(leak, false)
-    needles.push({ needle: leak.secret, label })
-    pieces.push(leak.secret)
-    for (const part of leak.secret.split('\n')) {
-      if (part.trim().length >= 8) {
-        needles.push({ needle: part, label })
-        pieces.push(part)
-      }
+    const parts = [leak.secret, ...leak.secret.split('\n').filter(part => part.trim().length >= 8)]
+    for (const part of parts) {
+      asRead.push({ needle: part, label: labelOf(leak, false) })
+      asHeld.push({ needle: part, label: mask(leak.secret) })
+      pieces.push(part)
     }
-    if (leak.isEncoded) {
-      for (const line of lines.slice(leak.startLine - 1, leak.endLine)) {
-        if (!line.includes(leak.secret) && line.trim().length >= 8) needles.push({ needle: line, label: labelOf(leak, true) })
-      }
+    if (!leak.isEncoded) continue
+    for (const line of lines.slice(leak.startLine - 1, leak.endLine)) {
+      if (line.includes(leak.secret) || line.trim().length < 8) continue
+      asRead.push({ needle: line, label: labelOf(leak, true) })
+      asHeld.push({ needle: line, label: '[encoded secret]' })
     }
   }
-  needles.sort((a, b) => b.needle.length - a.needle.length)
+  const longestFirst = (a: Needle, b: Needle) => b.needle.length - a.needle.length
+  asRead.sort(longestFirst)
+  asHeld.sort(longestFirst)
+  const safe = (line: string) => {
+    const clipped = line.length > EXCERPT_LINE ? `${line.slice(0, EXCERPT_LINE - 1)}…` : line
+
+    return pieces.every(piece => !clipped.includes(piece)) ? clipped : '[…]'
+  }
 
   const shown = lines.slice(from - 1, to).map((line, index) => {
-    const masked = redactValue(line, needles)
-    const isSafe = pieces.every(piece => !masked.includes(piece))
-    const clipped = masked.length > EXCERPT_LINE ? `${masked.slice(0, EXCERPT_LINE - 1)}…` : masked
+    const n = from + index
+    const read = safe(redactValue(line, asRead))
+    const held = safe(redactValue(line, asHeld))
+    const isHit = n >= start && n <= end
 
-    return { text: isSafe ? clipped : '[…]', isHit: from + index >= start && from + index <= end }
+    return held === read ? { n, text: read, isHit } : { n, text: read, isHit, inFile: held }
   })
 
   const first = lines[start - 1] ?? ''
   const numbered = NUMBERED.exec(first)
-  if (numbered?.[1] !== undefined) return { file: where.file, line: Number(numbered[1]), isFileLine: true, lines: shown }
+  if (numbered?.[1] !== undefined) {
+    return { file: where.file, line: Number(numbered[1]), isFileLine: true, isNumbered: true, lines: shown }
+  }
   const grep = GREP.exec(first)
   if (grep?.[1] !== undefined && grep[2] !== undefined) {
-    return { file: grep[1], line: Number(grep[2]), isFileLine: true, lines: shown }
+    return { file: grep[1], line: Number(grep[2]), isFileLine: true, isNumbered: true, lines: shown }
   }
 
-  return { file: where.file, line: start, isFileLine: where.isFileText === true, lines: shown }
+  return { file: where.file, line: start, isFileLine: where.isFileText === true, isNumbered: false, lines: shown }
 }
 
 /** A content block of a stored row, as `session.append` hands it. */

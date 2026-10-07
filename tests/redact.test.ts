@@ -150,34 +150,45 @@ describe('uniqueByHash', () => {
 const asRead = (one: Leak, isEncodedLine: boolean) => placeholder(one.rule, 1, isEncodedLine)
 
 describe('excerpt', () => {
-  test('a Read output: the file line from its numbering, the lines as the model read them', () => {
+  test('a Read output: the file line from its numbering, each line as read and as held', () => {
     const text = ['     4\timport x', '     5\t', `     6\tconst TOKEN = '${TOKEN}'`, '     7\t', '     8\tfunction leak() {'].join('\n')
     const hit = leak({ startLine: 3, endLine: 3 })
     const where = excerpt(text, [hit], hit, asRead, { file: '/p/tests/a.ts' })
-    expect(where.file).toBe('/p/tests/a.ts')
-    expect(where.line).toBe(6)
-    expect(where.isFileLine).toBe(true)
+    expect(where).toMatchObject({ file: '/p/tests/a.ts', line: 6, isFileLine: true, isNumbered: true })
     expect(where.lines).toEqual([
-      { text: '     4\timport x', isHit: false },
-      { text: '     5\t', isHit: false },
-      { text: "     6\tconst TOKEN = '[SECRET:github-pat#1]'", isHit: true },
-      { text: '     7\t', isHit: false },
-      { text: '     8\tfunction leak() {', isHit: false },
+      { n: 1, text: '     4\timport x', isHit: false },
+      { n: 2, text: '     5\t', isHit: false },
+      {
+        n: 3,
+        text: "     6\tconst TOKEN = '[SECRET:github-pat#1]'",
+        isHit: true,
+        inFile: "     6\tconst TOKEN = 'ghp_…[40]'",
+      },
+      { n: 4, text: '     7\t', isHit: false },
+      { n: 5, text: '     8\tfunction leak() {', isHit: false },
     ])
+  })
+
+  test('six lines each side are kept', () => {
+    const text = Array.from({ length: 20 }, (_, i) => (i === 9 ? `k=${TOKEN}` : `line ${i + 1}`)).join('\n')
+    const hit = leak({ startLine: 10, endLine: 10 })
+    const where = excerpt(text, [hit], hit, asRead)
+    expect(where.lines.map(line => line.n)).toEqual([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+    expect(where.isNumbered).toBe(false)
   })
 
   test('a Grep line: the file and line from the match itself', () => {
     const text = `src/config.ts:12:  token: '${TOKEN}',`
     const where = excerpt(text, [leak()], leak(), asRead)
-    expect(where).toMatchObject({ file: 'src/config.ts', line: 12, isFileLine: true })
+    expect(where).toMatchObject({ file: 'src/config.ts', line: 12, isFileLine: true, isNumbered: true })
     expect(JSON.stringify(where)).not.toContain(TOKEN)
   })
 
-  test('plain output: the line in the text, masked where the model saw the value', () => {
+  test('plain output: the line in the text; masked where the model saw the value', () => {
     const hit = leak({ startLine: 3, endLine: 3 })
     const where = excerpt(`a\nb\nGITHUB_TOKEN=${TOKEN}`, [hit], hit, one => mask(one.secret))
     expect(where).toMatchObject({ line: 3, isFileLine: false })
-    expect(where.lines.at(-1)).toEqual({ text: 'GITHUB_TOKEN=ghp_…[40]', isHit: true })
+    expect(where.lines.at(-1)).toEqual({ n: 3, text: 'GITHUB_TOKEN=ghp_…[40]', isHit: true })
   })
 
   test('no line shows any secret of the text, a part of a multi-line one included', () => {

@@ -33,8 +33,8 @@ type World = {
 }
 
 /** Stands for gitleaks, the dialog, a Bash run and the store beneath the plugin. */
-function world(on: On, w: World, output: string): void {
-  mock.clock(on, { now: 1_760_000_000_000 })
+function world(on: On, w: World, output: string) {
+  const clock = mock.clock(on, { now: 1_760_000_000_000 })
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('process.run', ($, e) => {
@@ -61,6 +61,8 @@ function world(on: On, w: World, output: string): void {
     ;(w.rows ??= []).push(e.message)
     return next(e)
   })
+
+  return clock
 }
 
 /** Appends a row and answers it as the plugin passed it on to be stored. */
@@ -229,23 +231,45 @@ describe('prompt', () => {
 })
 
 describe('pane', () => {
-  test('a finding shows its file:line and the line as the model read it; pressed, its source and the lines around', async ($, on) => {
+  test('a finding shows file:line, the lines around, the line as read and as in the file', async ($, on) => {
     const w: World = { answer: 'Cut the secrets', questions: [] }
-    const read = ['     1\t# settings', `     2\tGITHUB_TOKEN=${TOKEN}`, '     3\tDEBUG=1'].join('\n')
+    const read = Array.from({ length: 12 }, (_, i) =>
+      i === 5 ? `     6\tGITHUB_TOKEN=${TOKEN}` : `     ${i + 1}\tLINE_${i + 1}=x`,
+    ).join('\n')
     world(on, w, read)
     on('tool.call', { tool: 'Read' }, () => ({ result: { type: 'text', file: { content: read } }, text: read }))
 
     await $.tool.call({ tool: 'Read', file_path: '/project/config/.env' })
     const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
-    expect(await ui.find({ type: 'Text', text: /^config\/\.env:2$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /as the model read it/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /› 2 +GITHUB_TOKEN=\[SECRET:github-pat#1\]/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /DEBUG=1/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^config\/\.env:6$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /As the model read it/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /› +6 +GITHUB_TOKEN=\[SECRET:github-pat#1\]/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /in the file: 6 +GITHUB_TOKEN=ghp_…\[40\]/ })).toBeDefined()
+    // three lines each side before it is opened
+    expect(await ui.find({ type: 'Text', text: /LINE_3=x/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /LINE_9=x/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /LINE_2=x/ })).toBeUndefined()
 
     await ui.press({ key: 'open-1' })
-    expect(await ui.find({ type: 'Text', text: /^\/project\/config\/\.env$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /DEBUG=1/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /File: \/project\/config\/\.env$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /LINE_12=x/ })).toBeDefined()
     expect(await ui.find({ type: 'Button', key: 'allow-1' })).toBeDefined()
+    expect(JSON.stringify(await ui.drawn())).not.toContain(TOKEN)
+    await ui.unmount()
+  })
+
+  test('"show the value" shows it in the pane alone, and hides it again after 30 s', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    const clock = world(on, w, OUTPUT)
+    const ran = await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    expect(JSON.stringify(await ui.drawn())).not.toContain(TOKEN)
+    await ui.press({ key: 'reveal-1' })
+    expect(await ui.find({ type: 'Text', text: new RegExp(`Value: ${TOKEN}`) })).toBeDefined()
+    expect(JSON.stringify(ran)).not.toContain(TOKEN)
+
+    await clock.advance(30_000)
     expect(JSON.stringify(await ui.drawn())).not.toContain(TOKEN)
     await ui.unmount()
   })

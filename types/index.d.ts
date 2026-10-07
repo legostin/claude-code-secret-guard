@@ -41,8 +41,14 @@ export type Entry = {
   /** Its line: in `file` when `isFileLine`, else in the text that was checked. */
   line?: number
   isFileLine?: boolean
-  /** The lines around it as the model read them: placeholders where it read none, masks where it saw the value. */
-  lines?: { text: string; isHit: boolean }[]
+  /** The lines carry their own numbers (a Read's, a Grep's); else `n` numbers them. */
+  isNumbered?: boolean
+  /**
+   * The lines around it: `text` as the model read it (placeholders where it
+   * read none, masks where it saw the value), `inFile` as the text holds it
+   * with the value masked, where the two differ; `n` the line in the text.
+   */
+  lines?: { n: number; text: string; isHit: boolean; inFile?: string }[]
 }
 
 /** A secret the model may read: passed once, or marked as no secret. */
@@ -67,6 +73,8 @@ declare module 'claude-code' {
       scanner: Scanner
       /** The journal rows the person opened in the pane, by `seq`. */
       expanded: number[]
+      /** The journal rows whose value the person is shown right now, by `seq`. */
+      revealed: number[]
     }
   }
 }

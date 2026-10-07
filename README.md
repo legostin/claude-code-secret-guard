@@ -24,7 +24,7 @@ A coding agent reads whatever is in front of it: `cat .env`, a config file, a `c
 secret-guard puts a checkpoint between your machine and the model:
 
 - **Before the model reads anything.** It hooks the points where text enters the context, not the transcript afterwards. Once a secret has been sent, removing it later does not take it back.
-- **The value never leaves your machine.** Dialogs, the side pane and the journal show a mask (`ghp_…[40]`) and a hash. The raw value lives only in the mod's memory while a text is being checked.
+- **The value never reaches the model.** Dialogs and the journal show a mask (`ghp_…[40]`) and a hash. The pane shows the value itself only when you press *show the value*, and hides it again after 30 seconds. The value is kept in the mod's memory alone: not in the session state, not on disk, never in a dialog.
 - **When in doubt, it hides.** A dismissed dialog, a scanner failure or a crashed hook withholds the text. Nothing passes silently.
 
 ## What it checks
@@ -67,9 +67,12 @@ Answer `y` to add the marketplace, then pick a scope (user scope protects every 
   - the rule and the mask;
   - what happened: cut on your choice, cut again (a value cut before), hidden, passed;
   - where it stood, as `file:line` when the text says (a Read, a Grep match, a changed-file note, an `@`-file), otherwise the line of the output;
-  - **the line exactly as the model read it**, e.g. `GITHUB_TOKEN=[SECRET:github-pat#1]`.
+  - **the lines around it** (three each side; six once opened), and for the line with the secret both versions: **as the model read it** (`GITHUB_TOKEN=[SECRET:github-pat#1]`) and **as it is in the file**, value masked (`GITHUB_TOKEN=ghp_…[40]`);
+  - **show the value**: the value itself, in the pane only, for 30 seconds.
 
-  **Press a finding** to open it: the whole source (the full command), the whole file path, the lines around it as the model read them, and *allow from now on* for a false positive. *Clear the journal* empties the list.
+  **Press a finding** to open it: the whole source (the full command), the whole file path, more lines around it, and *allow from now on* for a false positive. *Clear the journal* empties the list.
+
+  The pane is drawn for you alone and is never part of the model's context. **Don't paste a screenshot of it into the chat**: images reach the model, and secret-guard does not scan images.
 
 - The **status line** shows `secret-guard: N hidden · /secrets` once something has been withheld. If gitleaks is missing, it shows the install command.
 - **Language.** The dialogs and the pane speak English or Russian. Run `/plugin configure secret-guard@secret-guard`, or set it in `settings.json`:
