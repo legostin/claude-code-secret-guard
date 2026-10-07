@@ -1,0 +1,16 @@
+{
+  "name": "secret-guard",
+  "owner": {
+    "name": "legostin"
+  },
+  "metadata": {
+    "description": "secret-guard: a Claude Code mod that keeps secrets out of the model context with gitleaks."
+  },
+  "plugins": [
+    {
+      "name": "secret-guard",
+      "source": "./",
+      "description": "Keeps secrets out of Claude's context: gitleaks scans every tool output, prompt and attachment before the model reads it, and you decide what the model sees."
+    }
+  ]
+}

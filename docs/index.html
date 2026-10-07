@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>secret-guard: keep secrets out of Claude Code's context</title>
+<meta name="description" content="A Claude Code mod that scans every tool output, prompt and attachment with gitleaks before the model reads it. API keys, tokens and private keys are cut out or withheld, and you decide what the AI agent sees.">
+<meta name="keywords" content="Claude Code, Claude Code plugin, Claude Code mod, gitleaks, secret scanning, prevent secret leaks, LLM data leak prevention, AI agent security, redact API keys, DLP, .env">
+<meta name="author" content="Legostin Vyacheslav">
+<link rel="canonical" href="https://legostin.github.io/claude-code-secret-guard/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="secret-guard: keep secrets out of Claude Code's context">
+<meta property="og:description" content="gitleaks scans every tool output, prompt and attachment before Claude reads it. Secrets are cut or withheld, and you decide what the model sees.">
+<meta property="og:url" content="https://legostin.github.io/claude-code-secret-guard/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="secret-guard for Claude Code">
+<meta name="twitter:description" content="Stop API keys and tokens from reaching the model: gitleaks checks every tool output before Claude reads it.">
+<meta name="theme-color" content="#0f1115">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 4 7v8c0 7.5 5.1 13.4 12 15 6.9-1.6 12-7.5 12-15V7z' fill='%23d97757'/%3E%3Crect x='11' y='14' width='10' height='8' rx='1.5' fill='%23fff'/%3E%3Cpath d='M13 14v-2.5a3 3 0 0 1 6 0V14' stroke='%23fff' stroke-width='2' fill='none'/%3E%3C/svg%3E">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "secret-guard",
+  "description": "A Claude Code mod that scans tool outputs, prompts and attachments with gitleaks before the model reads them, and lets the user cut, hide or pass each secret.",
+  "codeRepository": "https://github.com/legostin/claude-code-secret-guard",
+  "programmingLanguage": "TypeScript",
+  "license": "https://opensource.org/licenses/MIT",
+  "author": { "@type": "Person", "name": "Legostin Vyacheslav", "url": "https://github.com/legostin" },
+  "keywords": "Claude Code, gitleaks, secret scanning, AI agent security, data leak prevention"
+}
+</script>
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1c1b19; --muted: #6b6760; --line: #e6e2da;
+    --card: #ffffff; --accent: #c4623e; --code-bg: #f3f0ea; --ok: #2f7d4f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1115; --fg: #ece9e3; --muted: #9a958c; --line: #262a31;
+      --card: #161920; --accent: #e08a68; --code-bg: #1c2027; --ok: #6cc690;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 48px 16px 72px; }
+  header .tag { color: var(--accent); font-weight: 600; letter-spacing: .02em; font-size: 14px; }
+  h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.15; margin: 8px 0 16px; letter-spacing: -0.02em; }
+  h2 { font-size: 22px; margin: 48px 0 12px; }
+  p.lead { font-size: 19px; color: var(--muted); margin: 0 0 24px; }
+  a { color: var(--accent); }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0 8px; }
+  .btn { display: inline-block; padding: 10px 16px; border-radius: 8px; text-decoration: none; font-weight: 600; border: 1px solid var(--line); color: var(--fg); background: var(--card); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; margin: 12px 0; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre code { background: none; padding: 0; }
+  .dialog { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin: 20px 0; }
+  .dialog .q { font-weight: 600; margin-bottom: 8px; }
+  .dialog ol { margin: 0; padding-left: 22px; color: var(--muted); }
+  .dialog ol li:first-child { color: var(--fg); }
+  .arrow { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .table-wrap { overflow-x: auto; }
+  ul.limits li { margin-bottom: 6px; }
+  footer { margin-top: 56px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="tag">Claude Code mod · open source · MIT</div>
+    <h1>Keep secrets out of Claude Code's context</h1>
+    <p class="lead"><strong>secret-guard</strong> scans every tool output, prompt and attachment with <a href="https://github.com/gitleaks/gitleaks">gitleaks</a> <em>before</em> the model reads it. When an API key, token or private key shows up, the agent pauses and you decide what the model sees.</p>
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/legostin/claude-code-secret-guard">View on GitHub</a>
+      <a class="btn" href="#install">Install</a>
+      <a class="btn" href="https://github.com/legostin/claude-code-secret-guard/blob/main/README.ru.md">По-русски</a>
+    </div>
+  </header>
+
+  <div class="dialog" role="img" aria-label="Example dialog">
+    <div class="q">Bash: cat .env: secrets found (github-pat ghp_…[40]). What should the model see?</div>
+    <ol>
+      <li>Cut the secrets</li>
+      <li>Hide the whole output</li>
+      <li>Let the model see it</li>
+      <li>Not a secret, allow</li>
+    </ol>
+    <div class="arrow">→ the model reads <code>GITHUB_TOKEN=[SECRET:github-pat#1]</code> and never learns the value.</div>
+  </div>
+
+  <h2>Why</h2>
+  <p>A coding agent reads whatever is in front of it: <code>.env</code> files, configs, verbose <code>curl</code> output, logs. Everything it reads is sent to the model and kept in the session transcript. Removing a secret afterwards does not take it back, so secret-guard checks text <em>on its way in</em>.</p>
+
+  <div class="grid">
+    <div class="card"><h3>Before, not after</h3><p>It hooks the points where text enters the context: tool results, prompts, @-files, CLAUDE.md, attachments.</p></div>
+    <div class="card"><h3>You decide</h3><p>Cut the secret, hide the output, or let it through. A secret you cut once is cut again without asking.</p></div>
+    <div class="card"><h3>Hides when unsure</h3><p>A dismissed dialog, a missing scanner or a crashed hook withholds the text. Nothing passes silently.</p></div>
+    <div class="card"><h3>Values stay local</h3><p>Dialogs and the <code>/secrets</code> pane show masks and hashes only. Cut secrets are absent from the transcript file too.</p></div>
+  </div>
+
+  <h2>What it checks</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Where text enters</th><th>On a finding</th></tr>
+    <tr><td>Any tool's output: Bash, Read, Grep, WebFetch, MCP, subagents</td><td>Dialog: cut / hide / pass / not a secret</td></tr>
+    <tr><td>Your prompt</td><td>Dialog: cut / send as is / don't send</td></tr>
+    <tr><td><code>@path</code> mentions</td><td>Dialog: cut / don't attach / attach as is</td></tr>
+    <tr><td>CLAUDE.md, reminders, attachments</td><td>Cut automatically, logged in the pane</td></tr>
+    <tr><td>Every other stored row</td><td>Safety net: cut automatically</td></tr>
+  </table>
+  </div>
+  <p>gitleaks also decodes base64, hex and percent-encoding, so <code>cat .env | base64</code> is caught. It honours your project's <code>.gitleaks.toml</code>, <code>.gitleaksignore</code> and <code>gitleaks:allow</code> comments.</p>
+
+  <h2 id="install">Install</h2>
+  <p>Requires Claude Code with mods (tested on 2.1.292) and gitleaks 8.19 or newer.</p>
+<pre><code>brew install gitleaks</code></pre>
+  <p>Then, at the Claude Code prompt:</p>
+<pre><code>/plugin install secret-guard --marketplace legostin/claude-code-secret-guard</code></pre>
+  <p>Answer <code>y</code> to add the marketplace and pick a scope. Open the pane with <code>/secrets</code>. To switch the dialogs to Russian, set <code>language</code> to <code>ru</code> in <code>/config</code>.</p>
+
+  <h2>Limits</h2>
+  <ul class="limits">
+    <li>Pattern-based: it finds what gitleaks' ~200 rules and entropy checks find. A password with no recognizable shape can get through.</li>
+    <li>Images and screenshots are not scanned.</li>
+    <li>A value you let through is the model's.</li>
+    <li>No protection while the mod is not loaded. The status line and <code>/secrets</code> show its state.</li>
+    <li>Mods are an early-access Claude Code API.</li>
+  </ul>
+
+  <footer>
+    secret-guard is MIT licensed · <a href="https://github.com/legostin/claude-code-secret-guard">source</a> · <a href="https://github.com/legostin/claude-code-secret-guard/blob/main/docs/design.md">design notes</a> · not affiliated with Anthropic or Gitleaks
+  </footer>
+</main>
+</body>
+</html>

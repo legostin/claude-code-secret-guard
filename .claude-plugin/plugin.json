@@ -1,0 +1,33 @@
+{
+  "name": "secret-guard",
+  "version": "0.1.0",
+  "description": "Keeps secrets out of Claude's context: gitleaks scans every tool output, prompt and attachment before the model reads it, and you decide what the model sees.",
+  "author": {
+    "name": "Legostin Vyacheslav",
+    "url": "https://github.com/legostin"
+  },
+  "homepage": "https://legostin.github.io/claude-code-secret-guard/",
+  "repository": "https://github.com/legostin/claude-code-secret-guard",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "secrets",
+    "gitleaks",
+    "security",
+    "redaction",
+    "dlp"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "Language of the dialogs, pane and notices: en or ru. What the model reads is always English.",
+      "default": "en",
+      "options": [
+        "en",
+        "ru"
+      ]
+    }
+  }
+}

@@ -1,0 +1,66 @@
+# secret-guard: design
+
+Status: implemented in 0.1.0 · 2026-10-07
+
+## Goal
+
+Secrets (API keys, tokens, private keys, passwords) must not reach the model, not even once. The person decides, case by case, what the model may see.
+
+"Remove it from the context later" does not meet that goal: once a request with the secret was sent, the model has seen it. So every check runs **before** the text is stored in the conversation or sent.
+
+## Decisions
+
+| Question | Decision | Why |
+|---|---|---|
+| Detector | The gitleaks binary (`gitleaks stdin`, JSON report on stdout) | The same ~200 rules, entropy checks, decoding and `.gitleaks.toml` / `.gitleaksignore` handling as gitleaks itself; updated by the package manager; ~20–40 ms per scan |
+| On a finding | Pause and ask, every time a **new** secret shows up | The person decides; a secret cut once is cut again silently |
+| Dialog | The engine's own `$.ui.ask` (AskUserQuestion) | A hook may hold a dispatch for 10 s of its own time, but a `$` call in flight does not count; a button in the pane cannot hold the agent |
+| Scanner unavailable | Ask: hide or pass unchecked; where nobody can be asked, withhold | Fail closed without blocking the person |
+| Dismissed dialog | Hide | Fail closed |
+| What the model reads | English, always; the person's texts are `en` or `ru` (`language` option) | The model needs stable markers; the person reads their language |
+
+## Where text enters the context
+
+| Entry | Hook | Behaviour |
+|---|---|---|
+| A tool's output | `tool.call`, after `next(e)` | Scan `text`. On a new secret, ask. *Cut*: return the tool's own record with the secrets replaced in every string (`redactRecord`), so the model's tool_result **and** the transcript's `toolUseResult` are clean. *Hide*: `{ deny }`. An error result is cut and returned as `{ deny }`. |
+| Every stored row | `session.append` | Safety net: cut what is not passed; a text that cannot be checked is withheld. No dialogs here: appends are serialized, and a dialog's own rows would queue behind the one waiting. |
+| The person's prompt | `prompt.submit` | Ask; *don't send* → `{ drop }`, and the text goes back to the input box with `$.prompt.fill`. |
+| `@path` | `prompt.mention` | Read with `$.fs.read`, scan, ask; *don't attach* → `{ deny }`. The file's text arrives as an attachment, which `prompt.attachment` cuts. |
+| Injected attachments | `prompt.attachment` | Cut; on scanner failure, ask. (`session.append` cannot rewrite attachments rendered per request.) |
+| CLAUDE.md and context blocks | `prompt.context` | Cut; on scanner failure, ask. |
+| The system prompt | `prompt.compose` | A section telling the model what placeholders mean and not to try to recover withheld values. |
+
+## Cutting
+
+- A plain finding is replaced wherever its value occurs: `[SECRET:<rule>#<n>]`. `n` is per secret (by SHA-256 prefix) for the session.
+- A decoded finding (`Tags: decoded:*`) has a value that is not in the text: the lines that carry it are replaced: `[SECRET:<rule>#<n>: encoded secret, line withheld]`. A line that holds the decoded value verbatim is cut as plain text (gitleaks reports such artefacts spanning lines).
+- Several rules for one string: the specific one (`github-pat`) wins over a generic one (`generic-api-key`), the narrower span over the wider; longer needles first.
+- If a cut cannot be made whole (an encoded leak's lines are not in the text, or a value is still present afterwards), the text is withheld whole.
+
+## State
+
+`$.state` (session, survives hot reloads), declared in `types/index.d.ts`:
+
+- `entries`: the journal: masks (`ghp_…[40]`), SHA-256 prefixes, sources, decisions; never values.
+- `allowed`: hashes the model may read (passed once, or *not a secret*).
+- `labels`: hash → placeholder number.
+- `scanner`: status for the pane and status line.
+
+Raw values exist only in the module's memory, while a text is checked, plus a 64-entry cache of scans keyed by the text's hash.
+
+## Engine constraint worth knowing
+
+`claude plugin validate` refuses passing `$` into a function imported from another file. Every function that calls the engine lives in `hooks/register.tsx`; the other modules are pure.
+
+## Verification
+
+- `claude plugin test .`: 29 tests. Pure helpers, plus hooks over the engine's test kit with gitleaks and the dialog stubbed: cut / hide / dismiss / pass / repeat secret / scanner failure / prompt cut / prompt cancel / pane and allowlist / Russian texts.
+- Live, against Claude Code 2.1.292 and gitleaks 8.30.1, with `claude -p --plugin-dir`:
+  1. `cat` of a file holding a GitHub token: the dialog cannot be shown, the output is hidden; the model answers that it never saw the content; the token occurs **0 times** in the transcript file.
+  2. The same with *dismiss → cut* forced, on a file with a plain token and a base64-encoded one: the model quotes `GITHUB_TOKEN=[SECRET:…#1]` and `[SECRET:github-pat#…: encoded secret, line withheld]`; plain, base64 and decoded values occur **0 times** in the transcript.
+  3. The first version cut only the stored row: the token stayed in the transcript's `toolUseResult.stdout`. That led to cutting the tool's record in `tool.call`, and check 2 was run again.
+
+## Known limits
+
+Pattern-based detection; no image scanning; a passed value is the model's; the terminal may draw raw output before the rewrite (screen only); no protection when the mod is not loaded; early-access API.
