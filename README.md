@@ -64,7 +64,7 @@ Answer `y` to add the marketplace, then pick a scope (user scope protects every 
 
 - **`/secrets`** opens the side pane. It shows the scanner status, every finding with its mask, source and your decision, and the allowlist. Mark false positives as *not a secret*, or remove entries from the allowlist.
 - The **status line** shows `secret-guard: N hidden · /secrets` once something has been withheld. If gitleaks is missing, it shows the install command.
-- **Language.** The dialogs and the pane speak English or Russian. Set `language` to `ru` in `/config`, or in `settings.json`:
+- **Language.** The dialogs and the pane speak English or Russian. Run `/plugin configure secret-guard@secret-guard`, or set it in `settings.json`:
   ```json
   { "pluginConfigs": { "secret-guard@secret-guard": { "options": { "language": "ru" } } } }
   ```
