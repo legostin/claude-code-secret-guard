@@ -212,7 +212,10 @@ export const register: Register = (on, options) => {
   on('session.append', async ($, e, next) => {
     if (QUIET_DOORS.has(e.door) || e.message.type === 'system') return next(e)
     const source = `${t.doors[e.door] ?? e.door}${e.agentId === undefined ? '' : t.subagentSuffix}`
-    const content = await mapTexts(e.message.content, text => scrubQuietly($, text, source))
+    const content = await mapTexts(e.message.content, text =>
+      // A `!` command the person ran is their own typing, as a prompt is.
+      scrubQuietly($, text, text.includes('<bash-input>') ? t.shellCommand : source, undefined, text.includes('<bash-input>')),
+    )
 
     return content === undefined ? next(e) : next({ ...e, message: { ...e.message, content } })
   }).catch(async ($, e, next) => {
@@ -549,7 +552,13 @@ async function allow($: EngineInterface, found: readonly Found[], reason: 'passe
  * is cut and journaled, a known one cut again, and a text the scanner could
  * not check is withheld whole.
  */
-async function scrubQuietly($: EngineInterface, text: string, source: string, file?: string): Promise<string> {
+async function scrubQuietly(
+  $: EngineInterface,
+  text: string,
+  source: string,
+  file?: string,
+  isTyped = false,
+): Promise<string> {
   if (passedTexts.has(await hashOf(text))) return text
   const result = await scanText($, text)
   if (!result.isScanned) {
@@ -558,8 +567,9 @@ async function scrubQuietly($: EngineInterface, text: string, source: string, fi
 
     return withheld(result.reason)
   }
+  const leaks = isTyped && isWordRuleOn ? withWords(result.leaks, text) : result.leaks
 
-  return cutFound($, source, await unresolved($, result.leaks), { text, leaks: result.leaks, file })
+  return cutFound($, source, await unresolved($, leaks), { text, leaks, file })
 }
 
 /** As scrubQuietly, but a text the scanner could not check is the person's to pass. */

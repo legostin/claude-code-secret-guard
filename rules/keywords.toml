@@ -62,6 +62,22 @@ regexTarget = "secret"
 regexes = ['''^\$''', '''^\{''', '''^<''', '''^\*+$''', '''(?i)^(password|pass|secret|changeme|xxx+)$''']
 
 [[rules]]
+id = "cli-password-argument"
+description = "A password given on a command line: mysql -pPASS, sshpass -p PASS, curl -u user:PASS"
+regex = '''(?i)(?:\b(?:mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)\b[^\n|;&]*?\s-p([^\s"'`-][^\s"'`]{3,})|\bsshpass\b[^\n|;&]*?\s-p[ \t]*["']?([^\s"'`-][^\s"'`]{3,})|\b(?:curl|http|https)\b[^\n|;&]*?\s(?:-u|--user|--proxy-user)[ \t=]+["']?[^\s:"'`]+:([^\s"'`@]{4,}))'''
+keywords = ["mysql", "mariadb", "sshpass", "curl", "http"]
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''^\$''', '''\$\{''', '''^\{\{''', '''^<[^>]*>$''', '''^\*+$''', '''(?i)^(password|pass|passwd|changeme|xxx+)$''']
+
+[[rules]]
+id = "basic-auth"
+description = "Credentials in an Authorization: Basic header"
+regex = '''(?i)\bauthorization:[ \t]*basic[ \t]+([a-z0-9+/]{12,}={0,2})'''
+secretGroup = 1
+keywords = ["basic"]
+
+[[rules]]
 id = "bearer-token"
 description = "A bearer token in an Authorization header"
 regex = '''(?i)\bbearer[ \t]+([a-z0-9._~+/-]{16,}=*)'''

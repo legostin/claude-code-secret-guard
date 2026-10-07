@@ -52,6 +52,7 @@ export type Texts = {
   mentionQuestion: (source: string, found: readonly Found[]) => string
   failureQuestion: (source: string, reason: string) => string
   prompt: string
+  shellCommand: string
   subagentPrefix: string
   subagentSuffix: string
   attachment: (type: string, file?: string) => string
@@ -165,6 +166,7 @@ const EN: Texts = {
   },
   doors: {
     prompt: 'prompt',
+  shellCommand: 'your ! command',
     command: 'command output',
     'tool-result': 'tool result',
     'tool-message': 'tool message',
@@ -178,6 +180,7 @@ const EN: Texts = {
   mentionQuestion: (source, found) => `${source} holds secrets (${describe(found, 'en')}). What should be attached?`,
   failureQuestion: (source, reason) => `secret-guard could not check ${source} (${reason}). Pass it to the model unchecked?`,
   prompt: 'prompt',
+  shellCommand: 'your ! command',
   subagentPrefix: 'subagent, ',
   subagentSuffix: ' (subagent)',
   attachment: (type, file) => `${ATTACHMENTS_EN[type] ?? `system note (${type})`}${file === undefined ? '' : ` ${file}`}`,
@@ -277,6 +280,7 @@ const RU: Texts = {
   },
   doors: {
     prompt: 'промпт',
+  shellCommand: 'ваша команда через !',
     command: 'вывод команды',
     'tool-result': 'результат инструмента',
     'tool-message': 'сообщение инструмента',
@@ -290,6 +294,7 @@ const RU: Texts = {
   mentionQuestion: (source, found) => `В файле ${source} найдены секреты (${describe(found, 'ru')}). Что приложить к промпту?`,
   failureQuestion: (source, reason) => `secret-guard не смог проверить ${source} (${reason}). Отдать модели без проверки?`,
   prompt: 'промпт',
+  shellCommand: 'ваша команда через !',
   subagentPrefix: 'субагент, ',
   subagentSuffix: ' (субагент)',
   attachment: (type, file) => `${ATTACHMENTS_RU[type] ?? `системная заметка (${type})`}${file === undefined ? '' : ` ${file}`}`,

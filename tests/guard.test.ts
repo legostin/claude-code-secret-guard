@@ -703,3 +703,26 @@ describe('a shell command typed with !', () => {
     expect(w.questions).toHaveLength(0)
   })
 })
+
+describe('the record of a ! command', () => {
+  test('the model reads it with values cut, the random-word rule included', async ($, on) => {
+    const w: World = { questions: [] }
+    world(on, w, OUTPUT)
+    // gitleaks is stubbed here (ghp_ tokens alone); mysql -p and the other
+    // command-line rules are checked against real gitleaks by check_rules.py.
+    const typed = `<bash-input>deploy --key ${TOKEN} && echo Hz5kq2W9xR</bash-input>`
+
+    const row = await append($, w, typed)
+    expect(row).not.toContain(TOKEN)
+    expect(row).not.toContain('Hz5kq2W9xR')
+    expect(row).toContain('echo [SECRET:random-word#')
+    expect(w.questions).toHaveLength(0)
+  })
+
+  test('the random-word rule stays off other rows: a tool output keeps such a word', async ($, on) => {
+    const w: World = { questions: [] }
+    world(on, w, OUTPUT)
+
+    expect(await append($, w, 'build id Hz5kq2W9xR done')).toContain('Hz5kq2W9xR')
+  })
+})

@@ -49,7 +49,7 @@ Secrets (API keys, tokens, private keys, passwords) must not reach the model, no
 
 `$.store` (on disk, across sessions) holds `history`: the last 400 journal rows of every session, each with its session id and project, without the hash, and with only the lines near the secret.
 
-The random-word rule (hooks/words.ts) runs on the person's prompts alone, up to 2000 characters, on words of 8 characters or more. It scores how often the kind of character changes along a word (a Capital and its lowercase counted as one run), since Shannon entropy cannot separate short passwords from words. scripts/words_experiment.py measures it.
+The random-word rule (hooks/words.ts) runs on the person's prompts and on the record of a `!` command (the `<bash-input>` row the model reads; the command itself runs as typed), up to 2000 characters, on words of 8 characters or more. It scores how often the kind of character changes along a word (a Capital and its lowercase counted as one run), since Shannon entropy cannot separate short passwords from words. scripts/words_experiment.py measures it.
 
 The values themselves, for *show the value*, are kept in the module's memory alone (200 at most, gone on reload). The pane is no part of the model's context; a revealed value hides again after 30 s, so a screenshot pasted into the chat later does not carry it.
 - `known`: the registry, one row per secret met (hash, placeholder number, rule, mask, first and last seen, how often, last source). A secret with a number is cut again without a question until the person forgets it.
@@ -65,7 +65,7 @@ Raw values exist only in the module's memory, while a text is checked, plus a 64
 
 ## Verification
 
-- `claude plugin test .`: 68 tests. `scripts/check_rules.py`: the extra rules against real gitleaks. Pure helpers, plus hooks over the engine's test kit with gitleaks and the dialog stubbed: cut / hide / dismiss / pass / repeat secret / scanner failure / prompt cut / prompt cancel / pane and allowlist / file, line and masked lines in the pane / system prompt / Russian texts.
+- `claude plugin test .`: 70 tests. `scripts/check_rules.py`: the extra rules against real gitleaks. Pure helpers, plus hooks over the engine's test kit with gitleaks and the dialog stubbed: cut / hide / dismiss / pass / repeat secret / scanner failure / prompt cut / prompt cancel / pane and allowlist / file, line and masked lines in the pane / system prompt / Russian texts.
 - Live, against Claude Code 2.1.292 and gitleaks 8.30.1, with `claude -p --plugin-dir`:
   1. `cat` of a file holding a GitHub token: the dialog cannot be shown, the output is hidden; the model answers that it never saw the content; the token occurs **0 times** in the transcript file.
   2. The same with *dismiss → cut* forced, on a file with a plain token and a base64-encoded one: the model quotes `GITHUB_TOKEN=[SECRET:…#1]` and `[SECRET:github-pat#…: encoded secret, line withheld]`; plain, base64 and decoded values occur **0 times** in the transcript.
