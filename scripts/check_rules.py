@@ -79,6 +79,15 @@ def main() -> None:
         'yaml: password: value': f'  password: {password(9)}',
         'camelCase adminPass': f'adminPass: "{password(10)}"',
         'a keyword-and-digits password': f'password: password{secrets.randbelow(900) + 100}',
+        'a secret after name= (a connection string)': f'token: AccountKey={rand(44)}',
+        'a password after name= inside a value': f'secret: user=admin;pass={password(10)}',
+        'a keyword, words, then name=value': f'Secret key={password(12)}',
+        'yaml: a letters-only password': f'  password: {rand(12, string.ascii_lowercase)}',
+        'yaml: a digits-only password': f'db_password: {secrets.randbelow(90_000_000) + 10_000_000}',
+        'yaml: in a list': f'- password: {password(10)}',
+        'yaml in Read output': f'     7\t  password: {rand(11, string.ascii_lowercase)}',
+        'yaml in grep -n output': f'config/app.yml:12:  password: {rand(11, string.ascii_lowercase)}',
+        'json: an inline quoted key': f'{{"user":"app","password":"{rand(10, string.ascii_lowercase)}"}}',
         'mysql -pPASS': f'mysql -h db.internal -u root -p{password(12)} app',
         'mysqldump -pPASS in a pipe': f'mysqldump -uroot -p{password(10)} shop | gzip > shop.sql.gz',
         'sshpass -p PASS': f"sshpass -p '{password(11)}' ssh deploy@10.0.0.5",
@@ -175,6 +184,17 @@ def main() -> None:
         'compass = "north"': 'compass = "north"',
         'secret: ${{ secrets.X }}': 'secret: ${{ secrets.DEPLOY_KEY }}',
         'PASSWORD = "PASSWORD"': 'PASSWORD = "PASSWORD"',
+        'a mode after a keyword': 'token: mode=strict',
+        'prose after Password: at a line start': 'Password: Enter your password twice',
+        'prose after Secret:': 'Secret: see the vault for details',
+        'markdown bold key': '- **Password**: hidden',
+        'a note mid-line': 'Note: password: required for login',
+        'ts optional field': '  password?: string',
+        'yaml: a password from the environment': '  password: ${DB_PASSWORD}',
+        'yaml: password: masked': '  password: masked',
+        'secret: inside a regex, grep -n output': "35:regexes = ['''(?i)secret:[\\w-]+#\\d''']",
+        'yaml in grep -n output of one file': '12:  password_policy: strong',
+        'docs: mysql -pPASS, as a placeholder': 'e.g. mysql -pPASS, or sshpass -p PASS;',
         'an allowlist entry': "regexes = ['^\\$', '(?i)^(password|pass|secret|changeme|xxx+)$']",
     }
 
@@ -189,6 +209,15 @@ def main() -> None:
         ok = not rules
         failed |= not ok
         print(f"{'ok ' if ok else 'FP  '}  leave      {name:40} {', '.join(rules) or '-'}")
+
+    for path in ('rules/keywords.toml', 'rules/entropy.toml', 'hooks/rules.ts', 'scripts/check_rules.py'):
+        own = (root / path).read_text()
+        if path == 'scripts/check_rules.py':
+            own = own[:own.index('    must_catch = {')]
+        found = sorted({f'{f["RuleID"]}:{f["StartLine"]}' for f in scan(own, cfg)})
+        ok = not found
+        failed |= not ok
+        print(f"{'ok ' if ok else 'FP  '}  own file   {path:40} {', '.join(found) or '-'}")
 
     sample = [
         f'item {i}: {rand(secrets.choice([20, 24, 32, 40, 48, 64]), ABC if i % 2 else ABC + "-_")}'
