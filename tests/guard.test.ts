@@ -311,7 +311,7 @@ describe('pane', () => {
     const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
     await ui.press({ key: 'open-1' })
     await ui.press({ key: 'allow-1' })
-    expect(await ui.find({ type: 'Text', text: /Allowlist \(1\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /marked not a secret: the model sees it/ })).toBeDefined()
     await ui.unmount()
   })
 })
@@ -327,7 +327,8 @@ describe('language', () => {
     expect(ran.deny).toContain('the user withheld')
 
     const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
-    expect(await ui.find({ type: 'Text', text: /Находки \(1\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Журнал \(1\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Секреты этой сессии \(1\)/ })).toBeDefined()
     await ui.unmount()
   })
 })
@@ -403,5 +404,91 @@ describe('gitleaks rules', () => {
     await $.tool.call({ tool: 'Bash', command: 'cat .env' })
 
     expect(w.envs?.[0]?.GITLEAKS_CONFIG_TOML).toBeUndefined()
+  })
+})
+
+/** The key of the first Button whose key starts with `prefix`. */
+async function buttonKey(ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined }[]> }, prefix: string) {
+  const found = (await ui.findAll({ type: 'Button' })).find(one => one.key?.startsWith(prefix))
+  if (found?.key === undefined) throw new Error(`no button ${prefix}*`)
+
+  return found.key
+}
+
+describe('registry of secrets', () => {
+  test('each secret is listed once, with how often it was seen', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+    await $.tool.call({ tool: 'Bash', command: 'env' })
+
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    expect(await ui.find({ type: 'Text', text: /Secrets this session \(1\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /cut without a question: the model never sees it/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /seen 2 times · last .*Bash: env/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('clearing the log forgets nothing: the secret is still cut without a question', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    await ui.press({ key: 'clear' })
+    expect(await ui.find({ type: 'Text', text: /Log \(0\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Secrets this session \(1\)/ })).toBeDefined()
+    await ui.unmount()
+
+    const again = await $.tool.call({ tool: 'Bash', command: 'env' })
+    expect(w.questions).toHaveLength(1)
+    expect(JSON.stringify(again)).toContain('[SECRET:github-pat#1]')
+  })
+
+  test('forget: the next time the value appears, the person is asked again', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    await ui.press({ key: await buttonKey(ui, 'forget-') })
+    expect(await ui.find({ type: 'Text', text: /Secrets this session \(0\)/ })).toBeDefined()
+    await ui.unmount()
+
+    await $.tool.call({ tool: 'Bash', command: 'env' })
+    expect(w.questions).toHaveLength(2)
+  })
+
+  test('"cut again" takes a value off the allowlist: the model reads a placeholder again', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    await ui.press({ key: await buttonKey(ui, 'allow-secret-') })
+    expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'env' }))).toContain(TOKEN)
+    await ui.press({ key: await buttonKey(ui, 'cut-secret-') })
+    await ui.unmount()
+
+    expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'env' }))).not.toContain(TOKEN)
+    expect(w.questions).toHaveLength(1)
+  })
+
+  test('forget all: every value is asked about again, and no number is given twice', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    const other = 'ghp_Zq7Xv3Lm9Np2Rt5Wy8Bc1Df4Gh6Jk0Ms3Qa7E'
+    on('tool.call', { tool: 'Read' }, () => ({ result: { type: 'text', file: { content: `K=${other}` } }, text: `K=${other}` }))
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    await ui.press({ key: 'forget-all' })
+    expect(await ui.find({ type: 'Text', text: /Secrets this session \(0\)/ })).toBeDefined()
+    await ui.unmount()
+
+    const read = await $.tool.call({ tool: 'Read', file_path: '/project/k.env' })
+    expect(JSON.stringify(read)).toContain('[SECRET:github-pat#2]')
+    await $.tool.call({ tool: 'Bash', command: 'env' })
+    expect(w.questions).toHaveLength(3)
   })
 })

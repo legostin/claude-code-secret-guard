@@ -51,6 +51,24 @@ export type Entry = {
   lines?: { n: number; text: string; isHit: boolean; inFile?: string }[]
 }
 
+/**
+ * A secret met this session. Whether the model may read it is the allowlist's
+ * to say (`allowed`); one with a `number` was cut and is cut again without a
+ * question until the person forgets it.
+ */
+export type Known = {
+  hash: string
+  /** The number in `[SECRET:<rule>#<number>]`; 0 for a secret never cut. */
+  number: number
+  rule: string
+  mask: string
+  firstAt: number
+  lastAt: number
+  /** How many times it was journaled. */
+  seen: number
+  lastSource: string
+}
+
 /** A secret the model may read: passed once, or marked as no secret. */
 export type Allowed = {
   hash: string
@@ -69,12 +87,15 @@ declare module 'claude-code' {
     'secret-guard': {
       entries: Entry[]
       allowed: Allowed[]
-      labels: Record<string, number>
+      /** Every secret met this session, by hash: the registry the pane manages. */
+      known: Record<string, Known>
+      /** The last placeholder number given; never reused, a forgotten secret's included. */
+      lastNumber: number
       scanner: Scanner
       /** The journal rows the person opened in the pane, by `seq`. */
       expanded: number[]
-      /** The journal rows whose value the person is shown right now, by `seq`. */
-      revealed: number[]
+      /** The secrets whose value the person is shown right now, by hash. */
+      revealed: string[]
     }
   }
 }

@@ -76,14 +76,21 @@ Answer `y` to add the marketplace, then pick a scope (user scope protects every 
 
 ## Use
 
-- **`/secrets`** opens the side pane. Each finding shows:
-  - the rule and the mask;
-  - what happened: cut on your choice, cut again (a value cut before), hidden, passed;
-  - where it stood, as `file:line` when the text says (a Read, a Grep match, a changed-file note, an `@`-file), otherwise the line of the output;
-  - **the lines around it** (three each side; six once opened), and for the line with the secret both versions: **as the model read it** (`GITHUB_TOKEN=[SECRET:github-pat#1]`) and **as it is in the file**, value masked (`GITHUB_TOKEN=ghp_…[40]`);
-  - **show the value**: the value itself, in the pane only, for 30 seconds.
+- **`/secrets`** opens the side pane. It has two parts.
 
-  **Press a finding** to open it: the whole source (the full command), the whole file path, more lines around it, and *allow from now on* for a false positive. *Clear the journal* empties the list.
+  **Secrets this session** is the registry: every value met, listed once, with its status (*cut without a question* or *the model sees it*), how often it was seen and where last. For each value:
+  - *show the value*: the value itself, in the pane only, for 30 seconds;
+  - *allow from now on* or *cut again*;
+  - *forget*: the next time the value appears, you are asked again.
+
+  *Forget all* empties the registry. Placeholder numbers are never reused, so `#3` never means two different values.
+
+  **Log** lists what happened, newest first. For each event:
+  - the rule and the mask, and what happened in plain words;
+  - where it stood, as `file:line` when the text says (a Read, a Grep match, a changed-file note, an `@`-file), otherwise the line in the text;
+  - the lines around it (three each side; six once opened). The line with the secret appears both as the model read it (`GITHUB_TOKEN=[SECRET:github-pat#1]`) and as it is in the file, value masked (`GITHUB_TOKEN=ghp_…[40]`).
+
+  Press an event to open it: the whole source command and the whole file path. *Clear the log* only empties this list. Known secrets stay known.
 
   The pane is drawn for you alone and is never part of the model's context. **Don't paste a screenshot of it into the chat**: images reach the model, and secret-guard does not scan images.
 

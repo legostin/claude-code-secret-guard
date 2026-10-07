@@ -92,13 +92,19 @@ export type Texts = {
     valueWarning: string
     valueGone: string
     clear: string
-    allowlist: (count: number) => string
-    allowEmpty: string
-    allowHint: string
+    secrets: (count: number) => string
+    secretsHint: string
+    logHint: string
+    statusCut: string
+    statusNew: string
+    statusPassed: string
+    statusAllowed: string
+    seen: (count: number) => string
+    last: (time: string, source: string) => string
+    forgetAll: string
+    cutButton: string
     allowButton: string
     forgetButton: string
-    passed: string
-    notSecret: string
   }
 }
 
@@ -184,8 +190,8 @@ const EN: Texts = {
   paneOpened: 'secret-guard pane opened.',
   pane: {
     scanner: detail => `Scanner: ${detail}`,
-    intro: 'Secrets caught on their way to the model. Nothing in this pane is sent to it. Press a finding to open it.',
-    findings: count => `Findings (${count})`,
+    intro: 'Secrets caught on their way to the model. Nothing in this pane is sent to it. Press a log entry to open it.',
+    findings: count => `Log (${count})`,
     none: 'Nothing found yet.',
     at: (file, line) => `${file}:${line}`,
     textLine: line => `line ${line} of the text`,
@@ -203,13 +209,19 @@ const EN: Texts = {
     valueWarning: 'Only you see this pane; the model does not. It hides again in 30 s. Do not paste a screenshot of it into the chat: images reach the model and are not checked.',
     valueGone: 'value not kept (the mod reloaded)',
     clear: 'clear the journal',
-    allowlist: count => `Allowlist (${count})`,
-    allowEmpty: 'Empty: the model sees none of the values found.',
-    allowHint: 'An allowed value reaches the model from now on; what was already cut stays cut.',
+    secrets: count => `Secrets this session (${count})`,
+    secretsHint: 'Each value met, once. Forget it and you are asked again the next time it appears.',
+    logHint: 'What happened, newest first. Clearing it forgets nothing: known secrets stay known.',
+    statusCut: 'cut without a question: the model never sees it',
+    statusNew: 'not cut yet: you are asked when it appears',
+    statusPassed: 'passed by you: the model sees it',
+    statusAllowed: 'marked not a secret: the model sees it',
+    seen: count => `seen ${count} ${count === 1 ? 'time' : 'times'}`,
+    last: (time, source) => `last ${time}, ${source}`,
+    forgetAll: 'forget all',
+    cutButton: 'cut again',
     allowButton: 'allow from now on',
-    forgetButton: 'stop allowing',
-    passed: 'passed',
-    notSecret: 'not a secret',
+    forgetButton: 'forget',
   },
 }
 
@@ -280,8 +292,8 @@ const RU: Texts = {
   paneOpened: 'Панель secret-guard открыта.',
   pane: {
     scanner: detail => `Сканер: ${detail}`,
-    intro: 'Секреты, перехваченные по пути к модели. Ничего из этой панели модели не отправляется. Нажмите на находку, чтобы раскрыть её.',
-    findings: count => `Находки (${count})`,
+    intro: 'Секреты, перехваченные по пути к модели. Ничего из этой панели модели не отправляется. Нажмите на запись журнала, чтобы раскрыть её.',
+    findings: count => `Журнал (${count})`,
     none: 'Пока ничего не найдено.',
     at: (file, line) => `${file}:${line}`,
     textLine: line => `строка ${line} текста`,
@@ -299,13 +311,19 @@ const RU: Texts = {
     valueWarning: 'Эту панель видите только вы, модель её не получает. Через 30 с значение снова скроется. Не вставляйте скриншот панели в чат: картинки уходят модели и не проверяются.',
     valueGone: 'значение не сохранено (мод перезагружался)',
     clear: 'очистить журнал',
-    allowlist: count => `Allowlist (${count})`,
-    allowEmpty: 'Пусто: модель не видит ни одного найденного значения.',
-    allowHint: 'Разрешённое значение доходит до модели с этого момента; уже вырезанное остаётся вырезанным.',
+    secrets: count => `Секреты этой сессии (${count})`,
+    secretsHint: 'Каждое встреченное значение, по одному разу. Если забыть значение, при следующем появлении снова спросит.',
+    logHint: 'Что происходило, новое сверху. Очистка журнала ничего не забывает: известные секреты остаются известными.',
+    statusCut: 'вырезается без вопроса: модель его не видит',
+    statusNew: 'ещё не вырезался: при появлении спросит',
+    statusPassed: 'пропущен вами: модель его видит',
+    statusAllowed: 'отмечен «не секрет»: модель его видит',
+    seen: count => `встречался ${count} ${timesRu(count)}`,
+    last: (time, source) => `последний раз ${time}, ${source}`,
+    forgetAll: 'забыть все',
+    cutButton: 'снова вырезать',
     allowButton: 'пропускать дальше',
-    forgetButton: 'снова скрывать',
-    passed: 'пропущен',
-    notSecret: 'не секрет',
+    forgetButton: 'забыть',
   },
 }
 
@@ -359,4 +377,12 @@ export function shortPath(path: string, root: string): string {
 /** A text cut to `max` characters, for a dialog's one line. */
 export function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
+}
+
+/** «раз» or «раза», as Russian counts times. */
+function timesRu(count: number): string {
+  const ten = count % 10
+  const hundred = count % 100
+
+  return ten >= 2 && ten <= 4 && (hundred < 12 || hundred > 14) ? 'раза' : 'раз'
 }

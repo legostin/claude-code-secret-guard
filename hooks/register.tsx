@@ -15,7 +15,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, EventOf, Register, ToolCallResult } from 'claude-code'
 
-import type { Decision, Entry } from '../types'
+import type { Decision, Entry, Known } from '../types'
 import { excerpt, hashOf, mapTexts, mask, parseReport, placeholder, redact, redactRecord, uniqueByHash } from './redact'
 import { configWith } from './rules'
 import type { RuleSet } from './rules'
@@ -39,7 +39,8 @@ const PANE = 'secret-guard'
 
 const entries = atom({ plugin: 'secret-guard', key: 'entries' } as const, [])
 const allowed = atom({ plugin: 'secret-guard', key: 'allowed' } as const, [])
-const labels = atom({ plugin: 'secret-guard', key: 'labels' } as const, {})
+const known = atom({ plugin: 'secret-guard', key: 'known' } as const, {})
+const lastNumber = atom({ plugin: 'secret-guard', key: 'lastNumber' } as const, 0)
 const scanner = atom({ plugin: 'secret-guard', key: 'scanner' } as const, { status: 'unknown', detail: '' })
 const expanded = atom({ plugin: 'secret-guard', key: 'expanded' } as const, [])
 const revealed = atom({ plugin: 'secret-guard', key: 'revealed' } as const, [])
@@ -60,7 +61,6 @@ const MAX_ENTRIES = 200
 // Rows no secret reaches: the model's own words, a compaction of rows already
 // checked, and notices the model never reads.
 const QUIET_DOORS: ReadonlySet<string> = new Set(['response', 'compaction', 'notice'])
-const HIDING: ReadonlySet<Decision> = new Set(['redacted', 'recut', 'hidden', 'dropped', 'auto-redacted', 'withheld'])
 const ALLOWABLE: ReadonlySet<Decision> = new Set(['redacted', 'recut', 'hidden', 'dropped', 'auto-redacted'])
 // The model never read the value under these; it read a placeholder under
 // MODEL_READ, the value itself under SAW, and nothing at all under NOTHING.
@@ -414,27 +414,49 @@ async function unresolved($: EngineInterface, leaks: readonly Leak[]): Promise<F
 
 /** Secrets cut before (cut again without asking) and new ones (asked about). */
 async function splitKnown($: EngineInterface, found: readonly Found[]): Promise<{ known: Found[]; novel: Found[] }> {
-  const numbers = await read($, labels)
+  const registry = await read($, known)
+  const isCut = (one: Found) => (registry[one.hash]?.number ?? 0) > 0
 
-  return {
-    known: found.filter(one => numbers[one.hash] !== undefined),
-    novel: found.filter(one => numbers[one.hash] === undefined),
-  }
+  return { known: found.filter(isCut), novel: found.filter(one => !isCut(one)) }
 }
 
-/** Gives each secret the number the model reads it under, keeping the ones it has. */
+/**
+ * Gives each secret the number the model reads it under, keeping the ones it
+ * has. Numbers come from a counter that only grows, so a secret forgotten and
+ * met again, or a new one after it, never takes a number the model has read
+ * for another value.
+ */
 async function numbersFor($: EngineInterface, found: readonly Found[]): Promise<Record<string, number>> {
-  let numbers: Record<string, number> = {}
-  await update($, labels, current => {
-    const next = { ...current }
-    let count = Object.keys(next).length
-    for (const { hash } of found) {
-      if (next[hash] === undefined) next[hash] = ++count
-    }
-    numbers = next
+  const registry = await read($, known)
+  const lacking = uniqueByHash(found).filter(one => (registry[one.hash]?.number ?? 0) === 0)
+  if (lacking.length > 0) {
+    let first = 0
+    await update($, lastNumber, last => {
+      first = last + 1
 
-    return next
-  })
+      return last + lacking.length
+    })
+    const at = await $.clock.now()
+    await update($, known, current => {
+      const next = { ...current }
+      lacking.forEach(({ leak, hash }, index) => {
+        const had = next[hash]
+        if ((had?.number ?? 0) > 0) return
+        next[hash] = had === undefined
+          ? { hash, number: first + index, rule: leak.rule, mask: mask(leak.secret), firstAt: at, lastAt: at, seen: 0, lastSource: '' }
+          : { ...had, number: first + index }
+      })
+
+      return next
+    })
+  }
+
+  return numbersOf(await read($, known))
+}
+
+function numbersOf(registry: Record<string, Known>): Record<string, number> {
+  const numbers: Record<string, number> = {}
+  for (const one of Object.values(registry)) if (one.number > 0) numbers[one.hash] = one.number
 
   return numbers
 }
@@ -579,7 +601,7 @@ async function record(
   origin?: Origin,
 ): Promise<void> {
   if (found.length === 0) return
-  const numbers = await read($, labels)
+  const numbers = numbersOf(await read($, known))
   const at = await $.clock.now()
   const root = origin === undefined ? '' : await $.session.root()
 
@@ -614,6 +636,24 @@ async function record(
     values.set(hash, leak.secret)
   }
   while (values.size > VALUES_KEPT) values.delete(values.keys().next().value ?? '')
+  await update($, known, current => {
+    const next = { ...current }
+    for (const { leak, hash } of uniqueByHash(found)) {
+      const had = next[hash]
+      next[hash] = {
+        hash,
+        number: had?.number ?? 0,
+        rule: had?.rule ?? leak.rule,
+        mask: had?.mask ?? mask(leak.secret),
+        firstAt: had?.firstAt ?? at,
+        lastAt: at,
+        seen: (had?.seen ?? 0) + 1,
+        lastSource: source,
+      }
+    }
+
+    return next
+  })
   await update($, entries, list => {
     let seq = list.at(-1)?.seq ?? 0
     const added: Entry[] = uniqueByHash(found).map(({ leak, hash }) => ({
@@ -651,7 +691,8 @@ async function refreshStatus($: EngineInterface): Promise<void> {
 
     return
   }
-  const hidden = (await read($, entries)).filter(one => HIDING.has(one.decision)).length
+  const passing = new Set((await read($, allowed)).map(one => one.hash))
+  const hidden = Object.values(await read($, known)).filter(one => one.number > 0 && !passing.has(one.hash)).length
   $.ui.status(hidden > 0 ? t.status(hidden) : undefined)
 }
 
@@ -661,32 +702,110 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
   const { Box, Text, Button } = $.ui.resolve(e)
   const journal = await read($, entries)
   const allowList = await read($, allowed)
+  const registry = Object.values(await read($, known)).sort((a, b) => b.lastAt - a.lastAt)
   const state = await read($, scanner)
   const opened = new Set(await read($, expanded))
   const shownValues = new Set(await read($, revealed))
-  const allowedHashes = new Set(allowList.map(one => one.hash))
+  const allowedBy = new Map(allowList.map(one => [one.hash, one.reason]))
   const width = Math.max(24, 'bodyColumns' in e.props && typeof e.props.bodyColumns === 'number' ? e.props.bodyColumns : 60)
   const shown = journal.slice(-50).reverse()
 
   const toggle = (seq: number) =>
     update($, expanded, list => (list.includes(seq) ? list.filter(one => one !== seq) : [...list, seq]))
-  const hideValue = (seq: number) => update($, revealed, list => list.filter(one => one !== seq))
-  const showValue = async (seq: number) => {
-    await update($, revealed, list => (list.includes(seq) ? list : [...list, seq]))
-    $.clock.after(REVEAL_MS, () => hideValue(seq))
+  const hideValue = (hash: string) => update($, revealed, list => list.filter(one => one !== hash))
+  const showValue = async (hash: string) => {
+    await update($, revealed, list => (list.includes(hash) ? list : [...list, hash]))
+    $.clock.after(REVEAL_MS, () => hideValue(hash))
   }
-  const allowEntry = (entry: Entry) =>
-    update($, allowed, list =>
-      list.some(one => one.hash === entry.hash)
-        ? list
-        : [...list, { hash: entry.hash, rule: entry.rule, mask: entry.mask, reason: 'allowlisted' as const }],
+  const allowHash = async (hash: string, rule: string, shownMask: string) => {
+    await update($, allowed, list =>
+      list.some(one => one.hash === hash) ? list : [...list, { hash, rule, mask: shownMask, reason: 'allowlisted' as const }],
     )
-  const clear = async () => {
-    await update($, entries, () => [])
-    await update($, expanded, () => [])
+    await refreshStatus($)
+  }
+  const cutAgain = async (hash: string) => {
+    await update($, allowed, list => list.filter(one => one.hash !== hash))
+    await refreshStatus($)
+  }
+  const forget = async (hash: string) => {
+    await update($, known, current => {
+      const next = { ...current }
+      delete next[hash]
+
+      return next
+    })
+    await update($, allowed, list => list.filter(one => one.hash !== hash))
+    await update($, revealed, list => list.filter(one => one !== hash))
+    values.delete(hash)
+    await refreshStatus($)
+  }
+  const forgetAll = async () => {
+    await update($, known, () => ({}))
+    await update($, allowed, () => [])
     await update($, revealed, () => [])
     values.clear()
     await refreshStatus($)
+  }
+  const clearLog = async () => {
+    await update($, entries, () => [])
+    await update($, expanded, () => [])
+    await refreshStatus($)
+  }
+
+  const drawValue = (hash: string) => {
+    const value = values.get(hash)
+    if (value === undefined || !shownValues.has(hash)) return undefined
+
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text wrap="wrap" color="warning" bold>
+          {t.pane.valueLabel} {value}
+        </Text>
+        <Text wrap="wrap" dimColor>
+          {t.pane.valueWarning}
+        </Text>
+      </Box>
+    )
+  }
+  const revealButton = (hash: string, key: string) =>
+    values.get(hash) === undefined ? (
+      <Text dimColor>{t.pane.valueGone}</Text>
+    ) : (
+      <Button
+        key={key}
+        label={shownValues.has(hash) ? t.pane.hideValue : t.pane.showValue}
+        onPress={() => (shownValues.has(hash) ? hideValue(hash) : showValue(hash))}
+      />
+    )
+
+  const drawSecret = (one: Known) => {
+    const passing = allowedBy.get(one.hash)
+    const status = passing === undefined ? (one.number > 0 ? t.pane.statusCut : t.pane.statusNew) : passing === 'passed' ? t.pane.statusPassed : t.pane.statusAllowed
+
+    return (
+      <Box key={`secret-${one.hash}`} flexDirection="column" marginTop={1}>
+        <Text wrap="wrap" bold>
+          {one.rule}
+          {one.number > 0 ? ` #${one.number}` : ''} {one.mask}
+        </Text>
+        <Text wrap="wrap" color={passing === undefined ? 'success' : 'warning'}>
+          {status}
+        </Text>
+        <Text wrap="truncate-end" dimColor>
+          {t.pane.seen(one.seen)} · {t.pane.last(clock(one.lastAt), one.lastSource)}
+        </Text>
+        {drawValue(one.hash)}
+        <Box flexDirection="row" gap={1}>
+          {revealButton(one.hash, `reveal-secret-${one.hash}`)}
+          {passing === undefined ? (
+            <Button key={`allow-secret-${one.hash}`} label={t.pane.allowButton} onPress={() => allowHash(one.hash, one.rule, one.mask)} />
+          ) : (
+            <Button key={`cut-secret-${one.hash}`} label={t.pane.cutButton} onPress={() => cutAgain(one.hash)} />
+          )}
+          <Button key={`forget-${one.hash}`} label={t.pane.forgetButton} onPress={() => forget(one.hash)} />
+        </Box>
+      </Box>
+    )
   }
 
   const drawEntry = (entry: Entry) => {
@@ -707,8 +826,6 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
     const legend = NOTHING.has(entry.decision) ? t.pane.legendNothing : SAW.has(entry.decision) ? t.pane.legendSaw : t.pane.legendRead
     const numberOf = (n: number) => (entry.isNumbered === true ? '' : `${String(n).padStart(4)}  `)
     const isUnread = NOTHING.has(entry.decision)
-    const value = entry.hash === '' ? undefined : values.get(entry.hash)
-    const isShown = shownValues.has(entry.seq) && value !== undefined
 
     return (
       <Box key={`entry-${entry.seq}`} flexDirection="column" marginTop={1}>
@@ -752,29 +869,12 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
             ))}
           </Box>
         )}
-        {isShown && (
-          <Box flexDirection="column" marginTop={1}>
-            <Text wrap="wrap" color="warning" bold>
-              {t.pane.valueLabel} {value}
-            </Text>
-            <Text wrap="wrap" dimColor>
-              {t.pane.valueWarning}
-            </Text>
-          </Box>
-        )}
+        {entry.hash !== '' && drawValue(entry.hash)}
         {entry.hash !== '' && (
-          <Box flexDirection="row" gap={1} marginTop={isShown ? 0 : 1}>
-            {value === undefined ? (
-              <Text dimColor>{t.pane.valueGone}</Text>
-            ) : (
-              <Button
-                key={`reveal-${entry.seq}`}
-                label={isShown ? t.pane.hideValue : t.pane.showValue}
-                onPress={() => (isShown ? hideValue(entry.seq) : showValue(entry.seq))}
-              />
-            )}
-            {isOpen && ALLOWABLE.has(entry.decision) && !allowedHashes.has(entry.hash) && (
-              <Button key={`allow-${entry.seq}`} label={t.pane.allowButton} onPress={() => allowEntry(entry)} />
+          <Box flexDirection="row" gap={1} marginTop={1}>
+            {revealButton(entry.hash, `reveal-${entry.seq}`)}
+            {isOpen && ALLOWABLE.has(entry.decision) && !allowedBy.has(entry.hash) && (
+              <Button key={`allow-${entry.seq}`} label={t.pane.allowButton} onPress={() => allowHash(entry.hash, entry.rule, entry.mask)} />
             )}
           </Box>
         )}
@@ -790,37 +890,26 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
       <Text wrap="wrap" dimColor>
         {t.pane.intro}
       </Text>
+
       <Box flexDirection="row" marginTop={1} justifyContent="space-between">
-        <Text bold>{t.pane.findings(journal.length)}</Text>
-        {journal.length > 0 && <Button key="clear" label={t.pane.clear} onPress={clear} />}
+        <Text bold>{t.pane.secrets(registry.length)}</Text>
+        {registry.length > 0 && <Button key="forget-all" label={t.pane.forgetAll} onPress={forgetAll} />}
       </Box>
+      <Text wrap="wrap" dimColor>
+        {t.pane.secretsHint}
+      </Text>
+      {registry.length === 0 && <Text dimColor>{t.pane.none}</Text>}
+      {registry.map(drawSecret)}
+
+      <Box flexDirection="row" marginTop={2} justifyContent="space-between">
+        <Text bold>{t.pane.findings(journal.length)}</Text>
+        {journal.length > 0 && <Button key="clear" label={t.pane.clear} onPress={clearLog} />}
+      </Box>
+      <Text wrap="wrap" dimColor>
+        {t.pane.logHint}
+      </Text>
       {shown.length === 0 && <Text dimColor>{t.pane.none}</Text>}
       {shown.map(drawEntry)}
-      <Box marginTop={1}>
-        <Text bold>{t.pane.allowlist(allowList.length)}</Text>
-      </Box>
-      {allowList.length === 0 && (
-        <Text wrap="wrap" dimColor>
-          {t.pane.allowEmpty}
-        </Text>
-      )}
-      {allowList.map(one => (
-        <Box key={`allowed-${one.hash}`} flexDirection="column" marginTop={1}>
-          <Text wrap="wrap">
-            {one.rule} {one.mask} · {one.reason === 'passed' ? t.pane.passed : t.pane.notSecret}
-          </Text>
-          <Button
-            key={`forget-${one.hash}`}
-            label={t.pane.forgetButton}
-            onPress={() => update($, allowed, list => list.filter(other => other.hash !== one.hash))}
-          />
-        </Box>
-      ))}
-      <Box marginTop={1}>
-        <Text wrap="wrap" dimColor>
-          {t.pane.allowHint}
-        </Text>
-      </Box>
     </Box>
   )
 }
