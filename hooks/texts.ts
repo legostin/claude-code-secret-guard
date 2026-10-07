@@ -33,6 +33,18 @@ export function withheld(reason: string): string {
   return `[secret-guard: text withheld, it could not be checked for secrets (${reason})]`
 }
 
+/**
+ * What the model reads in place of a text withheld because gitleaks is not
+ * installed: how to install it, so the agent can, and then try again.
+ */
+export const MISSING_NOTE = [
+  '[secret-guard: text withheld. gitleaks, the secret scanner, is not installed, so nothing can be checked.',
+  'Install it, then run this step again:',
+  'macOS `brew install gitleaks`;',
+  'Linux a release binary from https://github.com/gitleaks/gitleaks/releases into ~/.local/bin,',
+  'or `go install github.com/zricethezav/gitleaks/v8@latest`.]',
+].join(' ')
+
 export const TOOL_FAILED = 'secret-guard: the output could not be checked for secrets and was withheld.'
 export const MENTION_SKIPPED = 'secret-guard: the file holds secrets; the user chose not to attach it'
 export const MENTION_FAILED = 'secret-guard: the file could not be checked for secrets'
@@ -45,6 +57,14 @@ export type Texts = {
   promptOptions: { redact: string; send: string; cancel: string; allow: string }
   mentionOptions: { redact: string; skip: string; pass: string; allow: string }
   failureOptions: { hide: string; pass: string }
+  missingOptions: { install: string; hide: string; pass: string }
+  missingQuestion: (source: string) => string
+  aborted: string
+  installing: string
+  installed: string
+  installFailed: (line: string) => string
+  noBrew: string
+  missingToast: string
   decisions: Record<Decision, string>
   doors: Record<string, string>
   toolQuestion: (source: string, found: readonly Found[]) => string
@@ -114,6 +134,7 @@ export type Texts = {
     dropSession: string
     sessionHeader: (date: string, project: string, session: string, count: number, isThis: boolean) => string
     allowButton: string
+    installButton: string
     forgetButton: string
   }
 }
@@ -154,6 +175,14 @@ const EN: Texts = {
     allow: 'Not a secret, allow',
   },
   failureOptions: { hide: 'Hide from the model', pass: 'Pass it unchecked' },
+  missingOptions: { install: 'Install gitleaks and check', hide: 'Hide from the model', pass: 'Pass it unchecked' },
+  missingQuestion: source => `gitleaks is not installed, so ${clip(source, 90)} cannot be checked. Install it now (brew install gitleaks)?`,
+  aborted: 'the check was interrupted',
+  installing: 'secret-guard: installing gitleaks (brew install gitleaks)…',
+  installed: 'secret-guard: gitleaks installed, checks are on',
+  installFailed: line => `gitleaks could not be installed: ${line}`,
+  noBrew: 'Homebrew not found: install gitleaks by hand, https://github.com/gitleaks/gitleaks#installing',
+  missingToast: 'secret-guard: gitleaks not found, nothing is checked. /secrets → install gitleaks',
   decisions: {
     redacted: 'cut on your choice',
     recut: 'cut again: this value was cut before, so no question',
@@ -243,6 +272,7 @@ const EN: Texts = {
     sessionHeader: (date, project, session, count, isThis) =>
       `${date} · ${project} · ${session}${isThis ? ' (this session)' : ''} · ${count} ${count === 1 ? 'event' : 'events'}`,
     allowButton: 'allow from now on',
+    installButton: 'install gitleaks',
     forgetButton: 'forget',
   },
 }
@@ -268,6 +298,14 @@ const RU: Texts = {
     allow: 'Не секрет, пропускать',
   },
   failureOptions: { hide: 'Скрыть от модели', pass: 'Пропустить без проверки' },
+  missingOptions: { install: 'Установить gitleaks и проверить', hide: 'Скрыть от модели', pass: 'Пропустить без проверки' },
+  missingQuestion: source => `gitleaks не установлен, ${clip(source, 90)} нечем проверить. Установить сейчас (brew install gitleaks)?`,
+  aborted: 'проверка прервана',
+  installing: 'secret-guard: устанавливаю gitleaks (brew install gitleaks)…',
+  installed: 'secret-guard: gitleaks установлен, проверка включена',
+  installFailed: line => `не удалось установить gitleaks: ${line}`,
+  noBrew: 'Homebrew не найден: установите gitleaks вручную, https://github.com/gitleaks/gitleaks#installing',
+  missingToast: 'secret-guard: gitleaks не найден, проверка не работает. /secrets → установить gitleaks',
   decisions: {
     redacted: 'вырезан по вашему решению',
     recut: 'вырезан снова: это значение уже вырезалось, поэтому без вопроса',
@@ -357,6 +395,7 @@ const RU: Texts = {
     sessionHeader: (date, project, session, count, isThis) =>
       `${date} · ${project} · ${session}${isThis ? ' (эта сессия)' : ''} · ${count} ${eventsRu(count)}`,
     allowButton: 'пропускать дальше',
+    installButton: 'установить gitleaks',
     forgetButton: 'забыть',
   },
 }

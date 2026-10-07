@@ -67,6 +67,8 @@ You need:
   # or: https://github.com/gitleaks/gitleaks#installing
   ```
 
+If gitleaks is missing, secret-guard says so at the start of a session and offers to install it: in the dialog (*Install gitleaks and check*, with Homebrew), with *install gitleaks* in the pane, or by telling the agent how to install it, in place of the output it withheld.
+
 Then, at the Claude Code prompt:
 
 ```
@@ -119,7 +121,7 @@ What is verified (see [`tests/`](tests) and the live checks in [`docs/design.md`
 
 - A cut or hidden secret appears neither in the request sent to the model nor in the session transcript file. Both the tool result the model reads and the record the transcript keeps for the screen are rewritten.
 - A dismissed dialog hides the output. In a headless run (`claude -p`) no dialog can be shown, so every finding is hidden.
-- If gitleaks is missing or fails, you are asked. Where nobody can be asked, the text is withheld.
+- If gitleaks is missing or fails, you are asked; when it is missing and Homebrew is there, installing it is the first choice, and the text is checked right after. Where nobody can be asked, the text is withheld and the agent reads how to install gitleaks. A check cut short (you interrupted) asks nothing and is not logged as a scanner failure.
 
 What it does not do:
 

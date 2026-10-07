@@ -106,7 +106,7 @@ export type Allowed = {
 }
 
 export type Scanner = {
-  status: 'unknown' | 'ok' | 'missing'
+  status: 'unknown' | 'ok' | 'missing' | 'installing'
   detail: string
 }
 

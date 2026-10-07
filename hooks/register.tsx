@@ -28,6 +28,7 @@ import {
   keyOf,
   MENTION_FAILED,
   MENTION_SKIPPED,
+  MISSING_NOTE,
   NOTE,
   pathIn,
   shortPath,
@@ -65,6 +66,9 @@ const GITLEAKS_ARGS = [
   '--exit-code', '0',
 ]
 const GITLEAKS_PATHS = ['gitleaks', '/opt/homebrew/bin/gitleaks', '/usr/local/bin/gitleaks']
+// Where an install by hand or by the agent leaves it, under the home folder.
+const GITLEAKS_HOME_PATHS = ['go/bin/gitleaks', '.local/bin/gitleaks', 'bin/gitleaks']
+const BREW_PATHS = ['brew', '/opt/homebrew/bin/brew', '/usr/local/bin/brew']
 const MIN_LENGTH = 8
 const CACHE_SIZE = 64
 const MAX_ENTRIES = 200
@@ -82,7 +86,12 @@ const NOTHING: ReadonlySet<Decision> = new Set(['hidden', 'dropped', 'withheld']
 // Lines shown around a finding before it is opened; opened, all that were kept.
 const AROUND_CLOSED = 3
 
-type ScanResult = { isScanned: true; leaks: Leak[] } | { isScanned: false; reason: string }
+/** Why a scan did not happen: gitleaks is not there, the call was cut short, or it failed. */
+type ScanFailure = { isScanned: false; reason: string; kind: 'missing' | 'aborted' | 'failed' }
+type ScanResult = { isScanned: true; leaks: Leak[] } | ScanFailure
+
+/** A scan, or why there is none and what the person chose then. */
+type Checked = { isScanned: true; leaks: Leak[] } | (ScanFailure & { isPassed: boolean })
 
 /** The text a finding was made in, so the journal can say where it stood. */
 type Origin = { text: string; leaks: readonly Leak[]; file?: string; isFileText?: boolean }
@@ -99,6 +108,8 @@ const values = new Map<string, string>()
 const VALUES_KEPT = 200
 const REVEAL_MS = 30_000
 let gitleaks: string | undefined
+// Homebrew's path once looked for; null when there is none.
+let brew: string | null | undefined
 // What the person reads, in the language the `language` option names.
 let t = textsFor('en')
 // The rules added to gitleaks' own (the keywordRules and entropyRule options),
@@ -116,6 +127,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'secrets', description: t.commandDescription })
     await probe($)
+    if ((await read($, scanner)).status === 'missing') $.ui.toast(t.missingToast, { timeoutMs: 10_000 })
 
     return next(e)
   })
@@ -153,17 +165,17 @@ export const register: Register = (on, options) => {
 
     const who = e.agentId === undefined ? '' : t.subagentPrefix
     const source = describeCall(String(e.tool), e as unknown as Record<string, unknown>, who)
-    const result = await scanText($, ran.text)
+    const result = await scanOrAsk($, ran.text, source)
     if (!result.isScanned) {
-      if ((await askFailure($, source, result.reason)) === 'pass') {
+      if (result.isPassed) {
         passedTexts.add(await hashOf(ran.text))
         await recordFailure($, source, result.reason, 'passed')
 
         return ran
       }
-      await recordFailure($, source, result.reason, 'withheld')
+      if (result.kind !== 'aborted') await recordFailure($, source, result.reason, 'withheld')
 
-      return { deny: withheld(result.reason) }
+      return { deny: unchecked(result) }
     }
 
     const found = await unresolved($, result.leaks)
@@ -229,14 +241,14 @@ export const register: Register = (on, options) => {
     // A shell command the person runs with `!` runs as typed: its output, and
     // the record of it the model reads, are checked as they are stored.
     if (e.text.trimStart().startsWith('!')) return next(e)
-    const result = await scanText($, e.text)
+    const result = await scanOrAsk($, e.text, t.prompt)
     if (!result.isScanned) {
-      if ((await askFailure($, t.prompt, result.reason)) === 'pass') {
+      if (result.isPassed) {
         passedTexts.add(await hashOf(e.text))
 
         return next(e)
       }
-      await recordFailure($, t.prompt, result.reason, 'dropped')
+      if (result.kind !== 'aborted') await recordFailure($, t.prompt, result.reason, 'dropped')
       await refill($, e.text)
 
       return { drop: t.promptDroppedFailure(result.reason) }
@@ -352,22 +364,28 @@ async function scanText($: EngineInterface, text: string): Promise<ScanResult> {
   const cwd = await $.session.root()
   const env = await gitleaksEnvironment($, cwd)
   let reason = t.notFound
-  for (const bin of gitleaks === undefined ? GITLEAKS_PATHS : [gitleaks]) {
+  let isMissing = true
+  for (const bin of gitleaks === undefined ? await gitleaksPaths($) : [gitleaks]) {
     let ran
     try {
       ran = await $.process.run([bin, ...GITLEAKS_ARGS], { cwd, env, stdin: withoutOwnMarks(text), timeoutMs: 20_000 })
     } catch (error) {
-      reason = `${bin}: ${messageOf(error)}`
+      const message = messageOf(error)
+      // Cut short (the person interrupted, the step was abandoned): no fault of gitleaks'.
+      if (/abort/i.test(message)) return { isScanned: false, reason: t.aborted, kind: 'aborted' }
+      // Not started at any path is gitleaks missing; a timeout is gitleaks failing.
+      isMissing &&= !/time|still running/i.test(message)
+      reason = `${bin}: ${message}`
       continue
     }
     if (ran.exitCode !== 0) {
-      return { isScanned: false, reason: t.exited(ran.exitCode, firstLine(ran.stderr)) }
+      return { isScanned: false, reason: t.exited(ran.exitCode, firstLine(ran.stderr)), kind: 'failed' }
     }
     let leaks: Leak[]
     try {
       leaks = parseReport(ran.stdout)
     } catch (error) {
-      return { isScanned: false, reason: t.unreadable(messageOf(error)) }
+      return { isScanned: false, reason: t.unreadable(messageOf(error)), kind: 'failed' }
     }
     scans.set(key, leaks)
     if (scans.size > CACHE_SIZE) scans.delete(scans.keys().next().value ?? '')
@@ -380,8 +398,90 @@ async function scanText($: EngineInterface, text: string): Promise<ScanResult> {
     return { isScanned: true, leaks: await knownIn($, text, leaks) }
   }
   gitleaks = undefined
+  if (!isMissing) return { isScanned: false, reason, kind: 'failed' }
+  if ((await read($, scanner)).status !== 'installing') {
+    await update($, scanner, () => ({ status: 'missing', detail: t.missing }))
+    await refreshStatus($)
+  }
 
-  return { isScanned: false, reason }
+  return { isScanned: false, reason: t.notFound, kind: 'missing' }
+}
+
+/** Where gitleaks may be: on PATH, Homebrew's folders, and the home folder's. */
+async function gitleaksPaths($: EngineInterface): Promise<string[]> {
+  const home = await $.env.get('HOME')
+
+  return [...GITLEAKS_PATHS, ...(home === undefined ? [] : GITLEAKS_HOME_PATHS.map(path => `${home}/${path}`))]
+}
+
+/** Homebrew's path, looked for once; undefined when there is none. */
+async function brewPath($: EngineInterface): Promise<string | undefined> {
+  if (brew !== undefined) return brew ?? undefined
+  for (const bin of BREW_PATHS) {
+    try {
+      if ((await $.process.run([bin, '--version'], { timeoutMs: 10_000 })).exitCode === 0) {
+        brew = bin
+
+        return bin
+      }
+    } catch {
+      // not at this path; try the next
+    }
+  }
+  brew = null
+
+  return undefined
+}
+
+/** Installs gitleaks with Homebrew. Undefined when it is in place; else why not. */
+async function install($: EngineInterface): Promise<string | undefined> {
+  const bin = await brewPath($)
+  if (bin === undefined) return t.noBrew
+  await update($, scanner, () => ({ status: 'installing', detail: t.installing }))
+  $.ui.toast(t.installing, { timeoutMs: 15_000 })
+  let failure: string | undefined
+  try {
+    const ran = await $.process.run([bin, 'install', 'gitleaks'], {
+      timeoutMs: 600_000,
+      env: { HOMEBREW_NO_AUTO_UPDATE: '1', HOMEBREW_NO_INSTALL_CLEANUP: '1' },
+    })
+    if (ran.exitCode !== 0) failure = t.installFailed(lastLine(ran.stderr || ran.stdout))
+  } catch (error) {
+    failure = t.installFailed(messageOf(error))
+  }
+  await probe($)
+  if (failure === undefined && (await read($, scanner)).status !== 'ok') failure = t.missing
+  $.ui.toast(failure ?? t.installed)
+
+  return failure
+}
+
+/**
+ * Scans, and when gitleaks is not there or fails asks the person: install it
+ * and check (when Homebrew is there), hide the text, or pass it unchecked.
+ * A check cut short asks nothing: what it guarded was abandoned with it.
+ */
+async function scanOrAsk($: EngineInterface, text: string, source: string): Promise<Checked> {
+  const first = await scanText($, text)
+  if (first.isScanned) return first
+  if (first.kind === 'aborted') return { ...first, isPassed: false }
+
+  const canInstall = first.kind === 'missing' && (await brewPath($)) !== undefined
+  const choice = canInstall
+    ? await ask($, t.missingQuestion(source), t.missingOptions, 'hide', 'hide')
+    : await ask($, t.failureQuestion(source, first.reason), t.failureOptions, 'hide', 'hide')
+  if (choice !== 'install') return { ...first, isPassed: choice === 'pass' }
+
+  const failure = await install($)
+  if (failure !== undefined) return { isScanned: false, reason: failure, kind: 'missing', isPassed: false }
+  const again = await scanText($, text)
+
+  return again.isScanned ? again : { ...again, isPassed: false }
+}
+
+/** What the model reads in place of a text that was not checked. */
+function unchecked(failure: ScanFailure): string {
+  return failure.kind === 'missing' ? MISSING_NOTE : withheld(failure.reason)
 }
 
 /**
@@ -428,7 +528,7 @@ async function knownIn($: EngineInterface, text: string, leaks: readonly Leak[])
 
 /** Finds the installed gitleaks and says so in the pane and status line. */
 async function probe($: EngineInterface): Promise<void> {
-  for (const bin of GITLEAKS_PATHS) {
+  for (const bin of await gitleaksPaths($)) {
     try {
       const ran = await $.process.run([bin, 'version'], { timeoutMs: 10_000 })
       if (ran.exitCode === 0) {
@@ -584,10 +684,12 @@ async function scrubQuietly(
   if (passedTexts.has(await hashOf(text))) return text
   const result = await scanText($, text)
   if (!result.isScanned) {
-    await recordFailure($, source, result.reason, 'withheld')
-    $.ui.toast(t.withheldToast(source))
+    if (result.kind !== 'aborted') {
+      await recordFailure($, source, result.reason, 'withheld')
+      $.ui.toast(result.kind === 'missing' ? t.missingToast : t.withheldToast(source))
+    }
 
-    return withheld(result.reason)
+    return unchecked(result)
   }
   const leaks = isTyped && isWordRuleOn ? withWords(result.leaks, text) : result.leaks
 
@@ -597,17 +699,17 @@ async function scrubQuietly(
 /** As scrubQuietly, but a text the scanner could not check is the person's to pass. */
 async function scrubAsking($: EngineInterface, text: string, source: string, file?: string): Promise<string> {
   if (passedTexts.has(await hashOf(text))) return text
-  const result = await scanText($, text)
+  const result = await scanOrAsk($, text, source)
   if (!result.isScanned) {
-    if ((await askFailure($, source, result.reason)) === 'pass') {
+    if (result.isPassed) {
       passedTexts.add(await hashOf(text))
       await recordFailure($, source, result.reason, 'passed')
 
       return text
     }
-    await recordFailure($, source, result.reason, 'withheld')
+    if (result.kind !== 'aborted') await recordFailure($, source, result.reason, 'withheld')
 
-    return withheld(result.reason)
+    return unchecked(result)
   }
 
   return cutFound($, source, await unresolved($, result.leaks), { text, leaks: result.leaks, file })
@@ -649,9 +751,6 @@ async function ask<O extends Record<string, string>>(
   }
 }
 
-function askFailure($: EngineInterface, source: string, reason: string) {
-  return ask($, t.failureQuestion(source, reason), t.failureOptions, 'hide', 'hide')
-}
 
 async function refill($: EngineInterface, text: string): Promise<void> {
   try {
@@ -1112,9 +1211,12 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
   )
   const header = (
     <Box flexDirection="column">
-      <Text wrap="wrap" color={state.status === 'missing' ? 'error' : 'success'}>
-        {state.status === 'missing' ? state.detail : t.pane.scanner(state.detail || 'gitleaks')}
-      </Text>
+      <Box flexDirection="row" gap={1}>
+        <Text wrap="wrap" color={state.status === 'ok' ? 'success' : state.status === 'installing' ? 'warning' : 'error'}>
+          {state.status === 'ok' ? t.pane.scanner(state.detail || 'gitleaks') : state.detail}
+        </Text>
+        {state.status === 'missing' && <Button key="install-gitleaks" label={t.pane.installButton} onPress={() => install($)} />}
+      </Box>
       <Text wrap="wrap" dimColor>
         {t.pane.intro}
       </Text>
@@ -1205,6 +1307,10 @@ function tidy(text: string): string {
 }
 
 // --- small helpers ------------------------------------------------------------
+
+function lastLine(text: string): string {
+  return text.trim().split('\n').at(-1)?.slice(0, 200) ?? ''
+}
 
 function firstLine(text: string): string {
   return text.trim().split('\n')[0]?.slice(0, 200) ?? ''

@@ -39,6 +39,12 @@ type World = {
   /** What the plugin's store holds at the start, and every value written to it. */
   store?: Record<string, unknown>
   stored?: string[]
+  /** Answers to give in turn, before `answer`; the options each dialog offered. */
+  answers?: string[]
+  options?: string[][]
+  hasBrew?: boolean
+  installs?: string[]
+  isAborted?: boolean
   /** Runs while the dialog is open, before it is answered. */
   whileAsked?: () => Promise<void>
   opened?: string[]
@@ -70,7 +76,17 @@ function world(on: On, w: World, output: string) {
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('process.run', ($, e) => {
-    if (w.isScannerBroken) throw new Error('spawn gitleaks ENOENT')
+    const bin = e.argv[0] ?? ''
+    if (bin.endsWith('brew')) {
+      if (w.hasBrew !== true) return { deny: `spawn ${bin} ENOENT` }
+      if (e.argv[1] === 'install') {
+        ;(w.installs ??= []).push(e.argv.join(' '))
+        w.isScannerBroken = false
+      }
+      return { value: ran('') }
+    }
+    if (w.isAborted) return { deny: 'secret-guard: $.process.run(gitleaks) aborted' }
+    if (w.isScannerBroken) return { deny: `spawn ${bin} ENOENT` }
     if (e.argv[1] === 'version') return { value: ran('8.30.1\n') }
     ;(w.envs ??= []).push({ ...(e.init?.env ?? {}) })
     ;(w.scanned ??= []).push(e.init?.stdin ?? '')
@@ -82,9 +98,11 @@ function world(on: On, w: World, output: string) {
     const question = e.questions[0]?.question ?? ''
     w.questions.push(question)
     await w.whileAsked?.()
-    if (w.answer === undefined) return { deny: 'The user dismissed the dialog' }
+    const answer = w.answers?.shift() ?? w.answer
+    ;(w.options ??= []).push((e.questions[0]?.options ?? []).map(one => one.label))
+    if (answer === undefined) return { deny: 'The user dismissed the dialog' }
 
-    return { result: { questions: e.questions, answers: { [question]: w.answer } }, text: `${question} → ${w.answer}` }
+    return { result: { questions: e.questions, answers: { [question]: answer } }, text: `${question} → ${answer}` }
   })
   on('tool.call', { tool: 'Bash' }, () => ({
     result: { stdout: output, stderr: '', interrupted: false },
@@ -747,5 +765,63 @@ describe('a value cut once', () => {
     expect(ran.text).toContain(TOKEN)
 
     expect(await append($, w, `echo: ${TOKEN}`)).toContain(TOKEN)
+  })
+})
+
+describe('gitleaks missing', () => {
+  test('with Homebrew: the dialog offers to install, then the text is checked', async ($, on) => {
+    const w: World = { answers: ['Install gitleaks and check', 'Cut the secrets'], questions: [], isScannerBroken: true, hasBrew: true }
+    world(on, w, OUTPUT)
+
+    const ran = await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+    expect(w.options?.[0]).toEqual(['Install gitleaks and check', 'Hide from the model', 'Pass it unchecked'])
+    expect(w.installs).toEqual(['brew install gitleaks'])
+    expect(w.questions[1]).toContain('secrets found')
+    expect(JSON.stringify(ran)).toContain('[SECRET:github-pat#1]')
+    expect(JSON.stringify(ran)).not.toContain(TOKEN)
+  })
+
+  test('hidden: the model reads how to install it, to do so itself', async ($, on) => {
+    const w: World = { answer: 'Hide from the model', questions: [], isScannerBroken: true, hasBrew: true }
+    world(on, w, OUTPUT)
+
+    const ran = await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+    expect(ran.deny).toContain('gitleaks, the secret scanner, is not installed')
+    expect(ran.deny).toContain('brew install gitleaks')
+    expect(w.installs).toBeUndefined()
+  })
+
+  test('without Homebrew: no install offered', async ($, on) => {
+    const w: World = { answer: 'Hide from the model', questions: [], isScannerBroken: true }
+    world(on, w, OUTPUT)
+
+    await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+    expect(w.options?.[0]).toEqual(['Hide from the model', 'Pass it unchecked'])
+  })
+
+  test('the pane offers to install it', async ($, on) => {
+    const w: World = { questions: [], isScannerBroken: true, hasBrew: true }
+    world(on, w, OUTPUT)
+    await append($, w, 'some text 12345')
+
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    await ui.press({ key: 'install-gitleaks' })
+    expect(w.installs).toEqual(['brew install gitleaks'])
+    expect(await ui.find({ type: 'Text', text: /Scanner: gitleaks/ })).toBeDefined()
+    await ui.unmount()
+  })
+})
+
+describe('a check cut short', () => {
+  test('asks nothing and journals nothing; the output is withheld', async ($, on) => {
+    const w: World = { answer: 'Pass it unchecked', questions: [], isAborted: true }
+    world(on, w, OUTPUT)
+
+    const ran = await $.tool.call({ tool: 'Bash', command: 'cat .env' })
+    expect(ran.deny).toContain('the check was interrupted')
+    expect(w.questions).toHaveLength(0)
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    expect(await ui.find({ type: 'Text', text: /Log \(0\)/ })).toBeDefined()
+    await ui.unmount()
   })
 })
