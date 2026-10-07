@@ -223,6 +223,9 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
+    // A shell command the person runs with `!` runs as typed: its output, and
+    // the record of it the model reads, are checked as they are stored.
+    if (e.text.trimStart().startsWith('!')) return next(e)
     const result = await scanText($, e.text)
     if (!result.isScanned) {
       if ((await askFailure($, t.prompt, result.reason)) === 'pass') {

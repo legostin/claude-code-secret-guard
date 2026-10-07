@@ -43,6 +43,12 @@ describe('isRandomWord', () => {
       '16K128',
       'aa12–34',
       'Qx7mP2k',
+      '^ACME_DB_PASS=',
+      'ACME_DB_PASS',
+      '$DB_PASSWORD',
+      'process.env.DB_PASS',
+      'STRIPE_SECRET_KEY=',
+      'grep:^API_KEY_V2=',
     ]
     for (const word of leave) expect([word, isRandomWord(word)]).toEqual([word, false])
   })

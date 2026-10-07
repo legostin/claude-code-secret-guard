@@ -8,7 +8,7 @@
 // Capital followed by lowercase as one run, as identifiers write words.
 //
 // Measured (scripts/words_experiment.py, on random passwords and on 593 past
-// prompts up to 2000 characters): 75% of passwords of 8 characters or more
+// prompts up to 2000 characters): 73% of passwords of 8 characters or more
 // caught, a dialog on 0.2%
 // of prompts. Longer prompts are pastes (logs, configs, CSS), where the same
 // measure raised a dialog on one in six: gitleaks' rules cover those, as they
@@ -30,7 +30,10 @@ const TOKEN = /[^\s"'`()[\]{}<>,;|]+/g
 // and kept out of what is cut.
 const EDGE = /^[«»"'’“”‘,;:*#>]+|[«»"'’“”‘,;:*#>]+$/g
 const TRAIL = /[.]+$/
-const SEPARATORS = /[-–—_.:@/?’'=\\+%×]+/
+// Every mark that is neither a letter nor a digit joins parts: an identifier
+// (ACME_DB_PASS), a pattern (^NAME=), a path. A password keeps letters and
+// digits mixed inside one part (73Kd91a4qx), which is what is judged.
+const SEPARATORS = /[^\p{L}\p{Nd}]+/u
 const PURE = /^(?:\p{L}+|\p{Nd}+)$/u
 // In a word of several parts ("python3-venv", "ab12.com") a part of letters
 // then digits, or digits then letters, is a name too.

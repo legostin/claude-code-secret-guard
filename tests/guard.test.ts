@@ -672,3 +672,34 @@ describe('while the dialog is open', () => {
     await ui.unmount()
   })
 })
+
+describe('a shell command typed with !', () => {
+  test('runs as typed: nothing in it is cut or asked about', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    let entered = ''
+    on('prompt.submit', ($, e) => {
+      entered = e.text
+      return { text: e.text }
+    })
+
+    const command = `! grep '^ACME_DB_PASS=' .env && echo Qx7mP2kw!! ${TOKEN}`
+    await $.prompt.submit({ text: command, wait: false, origin: { kind: 'composer' } })
+    expect(entered).toBe(command)
+    expect(w.questions).toHaveLength(0)
+  })
+
+  test('a variable name in a prompt is no secret: only values are cut', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    let entered = ''
+    on('prompt.submit', ($, e) => {
+      entered = e.text
+      return { text: e.text }
+    })
+
+    await $.prompt.submit({ text: "найди где читается ^ACME_DB_PASS= и STRIPE_SECRET_KEY", wait: false, origin: { kind: 'composer' } })
+    expect(entered).toBe("найди где читается ^ACME_DB_PASS= и STRIPE_SECRET_KEY")
+    expect(w.questions).toHaveLength(0)
+  })
+})

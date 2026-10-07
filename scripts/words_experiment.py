@@ -23,7 +23,7 @@ MIN_LENGTH = 8
 TOKEN = re.compile(r"[^\s\"'`()\[\]{}<>,;|]+")
 EDGE = '«»"\'’“”‘,;:*#>'
 TRAIL = re.compile(r'[.]+$')
-SEPARATORS = re.compile(r"[-–—_.:@/?’'=\\+%×]+")
+SEPARATORS = re.compile(r"[\W_]+")
 PURE = re.compile(r'^(?:[^\W\d_]+|\d+)$')
 # In a word of several parts ("python3-venv", "ab12.com") a part of letters then
 # digits, or digits then letters, is a name too.
