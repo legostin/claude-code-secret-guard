@@ -4,6 +4,10 @@
 # n characters has at most log2(n) bits per character): rules/keywords.toml
 # covers those. Hex strings (hashes, digests), UUIDs, SRI integrity values,
 # paths, dotted names (property access in code) and alphabets are not tokens.
+# Nor is a name made of plain parts (words, CamelCase words, CAPS, numbers,
+# a short word and number: v2, rc1, 2fa)
+# joined by - _ / +: a branch (bugfix/SHOP-4242-checkout-page), a ticket,
+# a slug. A random token's parts mix case and digits (aB3x).
 
 [[rules]]
 id = "high-entropy-token"
@@ -26,4 +30,5 @@ regexes = [
   '''ABCDEFGHIJ|abcdefghij|0123456789''',
   '''^[\w-]+(\.[\w-]+){2,}$''',
   '''(?i)^(https?|file|git|ssh)[:/]''',
+  '''^(?:[a-z]+(?:[A-Z][a-z]+)*|(?:[A-Z][a-z]+)+|[A-Z]+|[0-9]+|[a-z]{1,4}[0-9]{1,4}|[0-9]{1,4}[a-z]{1,4})(?:[-_/+](?:[a-z]+(?:[A-Z][a-z]+)*|(?:[A-Z][a-z]+)+|[A-Z]+|[0-9]+|[a-z]{1,4}[0-9]{1,4}|[0-9]{1,4}[a-z]{1,4}))+$''',
 ]
