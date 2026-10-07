@@ -54,8 +54,9 @@ export type Texts = {
   prompt: string
   subagentPrefix: string
   subagentSuffix: string
-  attachment: (type: string) => string
+  attachment: (type: string, file?: string) => string
   context: (name: string) => string
+  systemPrompt: (section: string) => string
   promptDropped: string
   promptDroppedFailure: (reason: string) => string
   promptFailed: string
@@ -72,8 +73,12 @@ export type Texts = {
   paneOpened: string
   pane: {
     scanner: (detail: string) => string
+    intro: string
     findings: (count: number) => string
     none: string
+    at: (file: string, line: number) => string
+    textLine: (line: number) => string
+    modelRead: (placeholder: string) => string
     allowlist: (count: number) => string
     allowEmpty: string
     allowHint: string
@@ -82,6 +87,21 @@ export type Texts = {
     passed: string
     notSecret: string
   }
+}
+
+// What the engine's attachment kinds are, in the person's words.
+const ATTACHMENTS_EN: Record<string, string> = {
+  edited_text_file: 'changed file',
+  file: 'attached file',
+  nested_memory: 'CLAUDE.md',
+  queued_command: 'queued prompt',
+}
+
+const ATTACHMENTS_RU: Record<string, string> = {
+  edited_text_file: 'изменённый файл',
+  file: 'приложенный файл',
+  nested_memory: 'CLAUDE.md',
+  queued_command: 'промпт из очереди',
 }
 
 const EN: Texts = {
@@ -106,13 +126,13 @@ const EN: Texts = {
   },
   failureOptions: { hide: 'Hide from the model', pass: 'Pass it unchecked' },
   decisions: {
-    redacted: 'cut',
-    hidden: 'output hidden',
-    passed: 'passed',
-    allowlisted: 'not a secret',
-    dropped: 'not sent',
-    'auto-redacted': 'cut (auto)',
-    withheld: 'text withheld',
+    redacted: 'cut on your choice',
+    hidden: 'the whole output hidden from the model',
+    passed: 'passed on your choice: the model saw the value',
+    allowlisted: 'marked not a secret: the model saw the value',
+    dropped: 'not sent to the model',
+    'auto-redacted': 'cut without asking (text the engine adds on its own)',
+    withheld: 'withheld whole: the scanner could not check it',
   },
   doors: {
     prompt: 'prompt',
@@ -131,8 +151,9 @@ const EN: Texts = {
   prompt: 'prompt',
   subagentPrefix: 'subagent, ',
   subagentSuffix: ' (subagent)',
-  attachment: type => `attachment ${type}`,
+  attachment: (type, file) => `${ATTACHMENTS_EN[type] ?? `system note (${type})`}${file === undefined ? '' : ` ${file}`}`,
   context: name => `context ${name}`,
+  systemPrompt: section => `system prompt (${section})`,
   promptDropped: 'secret-guard: the prompt was not sent, it holds a secret. Its text is back in the input box.',
   promptDroppedFailure: reason => `secret-guard: the prompt was not sent, it could not be checked (${reason}).`,
   promptFailed: 'secret-guard: the prompt could not be checked for secrets and was not sent.',
@@ -149,13 +170,17 @@ const EN: Texts = {
   paneOpened: 'secret-guard pane opened.',
   pane: {
     scanner: detail => `Scanner: ${detail}`,
+    intro: 'Secrets caught on their way to the model. Nothing in this pane is sent to it.',
     findings: count => `Findings (${count})`,
     none: 'Nothing found yet.',
+    at: (file, line) => `${file}, line ${line}`,
+    textLine: line => `line ${line} of the text`,
+    modelRead: placeholder => `the model read: ${placeholder}`,
     allowlist: count => `Allowlist (${count})`,
     allowEmpty: 'Empty: the model sees none of the values found.',
-    allowHint: 'The allowlist applies to new occurrences: from then on the model sees the value.',
-    allowButton: 'not a secret',
-    forgetButton: 'remove',
+    allowHint: 'An allowed value reaches the model from now on; what was already cut stays cut.',
+    allowButton: 'allow from now on',
+    forgetButton: 'stop allowing',
     passed: 'passed',
     notSecret: 'not a secret',
   },
@@ -183,13 +208,13 @@ const RU: Texts = {
   },
   failureOptions: { hide: 'Скрыть от модели', pass: 'Пропустить без проверки' },
   decisions: {
-    redacted: 'вырезан',
-    hidden: 'вывод скрыт',
-    passed: 'пропущен',
-    allowlisted: 'не секрет',
-    dropped: 'не отправлен',
-    'auto-redacted': 'вырезан авто',
-    withheld: 'текст скрыт',
+    redacted: 'вырезан по вашему решению',
+    hidden: 'весь вывод скрыт от модели',
+    passed: 'пропущен по вашему решению: модель видела значение',
+    allowlisted: 'отмечен «не секрет»: модель видела значение',
+    dropped: 'не отправлен модели',
+    'auto-redacted': 'вырезан без вопроса (текст, который движок добавляет сам)',
+    withheld: 'скрыт целиком: сканер не смог проверить',
   },
   doors: {
     prompt: 'промпт',
@@ -208,8 +233,9 @@ const RU: Texts = {
   prompt: 'промпт',
   subagentPrefix: 'субагент, ',
   subagentSuffix: ' (субагент)',
-  attachment: type => `вложение ${type}`,
+  attachment: (type, file) => `${ATTACHMENTS_RU[type] ?? `системная заметка (${type})`}${file === undefined ? '' : ` ${file}`}`,
   context: name => `контекст ${name}`,
+  systemPrompt: section => `системный промпт (${section})`,
   promptDropped: 'secret-guard: промпт не отправлен, в нём секрет. Текст возвращён в поле ввода.',
   promptDroppedFailure: reason => `secret-guard: промпт не отправлен, проверка не удалась (${reason}).`,
   promptFailed: 'secret-guard: проверить промпт на секреты не удалось, промпт не отправлен.',
@@ -226,13 +252,17 @@ const RU: Texts = {
   paneOpened: 'Панель secret-guard открыта.',
   pane: {
     scanner: detail => `Сканер: ${detail}`,
+    intro: 'Секреты, перехваченные по пути к модели. Ничего из этой панели модели не отправляется.',
     findings: count => `Находки (${count})`,
     none: 'Пока ничего не найдено.',
+    at: (file, line) => `${file}, строка ${line}`,
+    textLine: line => `строка ${line} текста`,
+    modelRead: placeholder => `модель видела: ${placeholder}`,
     allowlist: count => `Allowlist (${count})`,
     allowEmpty: 'Пусто: модель не видит ни одного найденного значения.',
-    allowHint: 'Allowlist действует на новые появления значения: с этого момента модель его видит.',
-    allowButton: 'не секрет',
-    forgetButton: 'убрать',
+    allowHint: 'Разрешённое значение доходит до модели с этого момента; уже вырезанное остаётся вырезанным.',
+    allowButton: 'пропускать дальше',
+    forgetButton: 'снова скрывать',
     passed: 'пропущен',
     notSecret: 'не секрет',
   },
@@ -273,4 +303,18 @@ export function keyOf<O extends Record<string, string>>(
 
 export function clock(at: number): string {
   return new Date(at).toTimeString().slice(0, 8)
+}
+
+/** The first absolute path a text names, as a changed-file note does. */
+export function pathIn(text: string): string | undefined {
+  const match = /(?:^|[\s'"`(])(\/[^\s'"`()]+)/.exec(text)
+
+  return match?.[1]?.replace(/[.,:;]+$/, '')
+}
+
+/** A path as the pane shows it: under the project root relative, a long one by its end. */
+export function shortPath(path: string, root: string): string {
+  const relative = root !== '' && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path
+
+  return relative.length > 70 ? `…${relative.slice(-69)}` : relative
 }

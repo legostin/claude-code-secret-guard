@@ -32,6 +32,13 @@ export type Entry = {
   mask: string
   hash: string
   decision: Decision
+  /** The file the secret stood in, when the text says which. */
+  file?: string
+  /** Its line: in `file` when `isFileLine`, else in the text that was checked. */
+  line?: number
+  isFileLine?: boolean
+  /** The lines around it, every secret masked. */
+  lines?: { text: string; isHit: boolean }[]
 }
 
 /** A secret the model may read: passed once, or marked as no secret. */

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { mapTexts, mask, parseReport, redact, redactRecord, uniqueByHash, WHOLE } from '../hooks/redact'
+import { excerpt, mapTexts, mask, parseReport, redact, redactRecord, uniqueByHash, WHOLE } from '../hooks/redact'
 import type { Leak } from '../hooks/redact'
 
 const TOKEN = 'ghp_8x2LmQ7vN4pR9sT1wY6zA3bC5dE0fG2hJ4kM'
@@ -143,5 +143,45 @@ describe('uniqueByHash', () => {
       { hash: 'h1', leak: leak({ rule: 'github-pat' }) },
     ]
     expect(uniqueByHash(found).map(one => one.leak.rule)).toEqual(['github-pat'])
+  })
+})
+
+describe('excerpt', () => {
+  test('a Read output: the file line from its numbering, the lines around, the secret masked', () => {
+    const text = ['     4\timport x', '     5\t', `     6\tconst TOKEN = '${TOKEN}'`, '     7\t', '     8\tfunction leak() {'].join('\n')
+    const where = excerpt(text, [leak({ startLine: 3, endLine: 3 })], leak({ startLine: 3, endLine: 3 }), { file: '/p/tests/a.ts' })
+    expect(where.file).toBe('/p/tests/a.ts')
+    expect(where.line).toBe(6)
+    expect(where.isFileLine).toBe(true)
+    expect(where.lines).toEqual([
+      { text: '     4\timport x', isHit: false },
+      { text: '     5\t', isHit: false },
+      { text: "     6\tconst TOKEN = 'ghp_…[40]'", isHit: true },
+      { text: '     7\t', isHit: false },
+      { text: '     8\tfunction leak() {', isHit: false },
+    ])
+  })
+
+  test('a Grep line: the file and line from the match itself', () => {
+    const text = `src/config.ts:12:  token: '${TOKEN}',`
+    const where = excerpt(text, [leak()], leak())
+    expect(where).toMatchObject({ file: 'src/config.ts', line: 12, isFileLine: true })
+    expect(JSON.stringify(where)).not.toContain(TOKEN)
+  })
+
+  test('plain output: the line in the text', () => {
+    const where = excerpt(`a\nb\nGITHUB_TOKEN=${TOKEN}`, [leak({ startLine: 3, endLine: 3 })], leak({ startLine: 3, endLine: 3 }))
+    expect(where).toMatchObject({ line: 3, isFileLine: false })
+    expect(where.lines.at(-1)).toEqual({ text: 'GITHUB_TOKEN=ghp_…[40]', isHit: true })
+  })
+
+  test('no line shows any secret of the text, a part of a multi-line one included', () => {
+    const key = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----'
+    const text = `before\n${key}\nafter ${TOKEN}`
+    const pem = leak({ rule: 'private-key', secret: key, startLine: 2, endLine: 4 })
+    const where = excerpt(text, [pem, leak({ startLine: 5, endLine: 5 })], pem)
+    const shown = JSON.stringify(where)
+    expect(shown).not.toContain('MIIEvQIBADANBgkqhkiG9w0BAQEFAASC')
+    expect(shown).not.toContain(TOKEN)
   })
 })

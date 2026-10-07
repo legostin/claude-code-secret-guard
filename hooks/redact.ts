@@ -165,6 +165,83 @@ function everyString(value: unknown, test: (text: string) => boolean): boolean {
   return true
 }
 
+/** One line of an excerpt, as the pane shows it. */
+export type ExcerptLine = { text: string; isHit: boolean }
+
+/** Where a leak stands and the lines around it, every secret masked. */
+export type Excerpt = {
+  /** The file the lines come from, when the text says which. */
+  file?: string
+  /** The line in that file, or else in the text. */
+  line: number
+  isFileLine: boolean
+  lines: ExcerptLine[]
+}
+
+// `     6\tcode` or `     6→code`: a Read of a file, a changed-file note.
+const NUMBERED = /^\s*(\d+)(?:\t|→)/
+// `src/app.ts:12:code`: a Grep with line numbers.
+const GREP = /^([^\s:]*[/.][^\s:]*):(\d+)[:-]/
+const EXCERPT_LINE = 240
+
+/**
+ * The lines around `hit` in `text`, with every leak of the text masked
+ * (`ghp_…[40]`, an encoded line as `[encoded secret]`), so the person sees
+ * where it stood and never the value. A line a secret could still be read
+ * from is dropped to `[…]`.
+ */
+export function excerpt(
+  text: string,
+  leaks: readonly Leak[],
+  hit: Leak,
+  where: { file?: string; isFileText?: boolean } = {},
+  around = 2,
+): Excerpt {
+  const lines = text.split('\n').map(line => line.replace(/\r$/, ''))
+  const start = Math.min(Math.max(1, hit.startLine), lines.length)
+  const end = Math.min(Math.max(start, hit.endLine), lines.length)
+  const from = Math.max(1, start - around)
+  const to = Math.min(lines.length, end + around)
+
+  const needles: Needle[] = []
+  const pieces: string[] = []
+  for (const leak of leaks) {
+    const shown = mask(leak.secret)
+    needles.push({ needle: leak.secret, label: shown })
+    for (const part of leak.secret.split('\n')) {
+      if (part.trim().length >= 8) {
+        needles.push({ needle: part, label: shown })
+        pieces.push(part)
+      }
+    }
+    pieces.push(leak.secret)
+    if (leak.isEncoded) {
+      for (const line of lines.slice(leak.startLine - 1, leak.endLine)) {
+        if (!line.includes(leak.secret) && line.trim().length >= 8) needles.push({ needle: line, label: '[encoded secret]' })
+      }
+    }
+  }
+  needles.sort((a, b) => b.needle.length - a.needle.length)
+
+  const shown = lines.slice(from - 1, to).map((line, index) => {
+    const masked = redactValue(line, needles)
+    const isSafe = pieces.every(piece => !masked.includes(piece))
+    const clipped = masked.length > EXCERPT_LINE ? `${masked.slice(0, EXCERPT_LINE - 1)}…` : masked
+
+    return { text: isSafe ? clipped : '[…]', isHit: from + index >= start && from + index <= end }
+  })
+
+  const first = lines[start - 1] ?? ''
+  const numbered = NUMBERED.exec(first)
+  if (numbered?.[1] !== undefined) return { file: where.file, line: Number(numbered[1]), isFileLine: true, lines: shown }
+  const grep = GREP.exec(first)
+  if (grep?.[1] !== undefined && grep[2] !== undefined) {
+    return { file: grep[1], line: Number(grep[2]), isFileLine: true, lines: shown }
+  }
+
+  return { file: where.file, line: start, isFileLine: where.isFileText === true, lines: shown }
+}
+
 /** A content block of a stored row, as `session.append` hands it. */
 export type Block = { type: string; [field: string]: unknown }
 

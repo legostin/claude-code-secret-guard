@@ -7,6 +7,7 @@
 //   prompt.mention     an @-mentioned file: asks before it is attached
 //   prompt.attachment  files, reminders, hook output the engine injects
 //   prompt.context     CLAUDE.md and the first message's context blocks
+//   prompt.compose     the system prompt's sections
 //
 // Secrets live only in this module's memory, for as long as a text is being
 // checked. The journal and the allowlist hold masks and hashes.
@@ -15,7 +16,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, EventOf, Register, ToolCallResult } from 'claude-code'
 
 import type { Decision, Entry } from '../types'
-import { hashOf, mapTexts, mask, parseReport, redact, redactRecord, uniqueByHash } from './redact'
+import { excerpt, hashOf, mapTexts, mask, parseReport, redact, redactRecord, uniqueByHash } from './redact'
 import type { Cut, Found, Leak } from './redact'
 import {
   clock,
@@ -25,6 +26,8 @@ import {
   MENTION_FAILED,
   MENTION_SKIPPED,
   NOTE,
+  pathIn,
+  shortPath,
   textsFor,
   TOOL_FAILED,
   withheld,
@@ -48,15 +51,21 @@ const GITLEAKS_ARGS = [
 const GITLEAKS_PATHS = ['gitleaks', '/opt/homebrew/bin/gitleaks', '/usr/local/bin/gitleaks']
 const MIN_LENGTH = 8
 const CACHE_SIZE = 64
-const MAX_ENTRIES = 500
+const MAX_ENTRIES = 200
 
 // Rows no secret reaches: the model's own words, a compaction of rows already
 // checked, and notices the model never reads.
 const QUIET_DOORS: ReadonlySet<string> = new Set(['response', 'compaction', 'notice'])
 const HIDING: ReadonlySet<Decision> = new Set(['redacted', 'hidden', 'dropped', 'auto-redacted', 'withheld'])
 const ALLOWABLE: ReadonlySet<Decision> = new Set(['redacted', 'hidden', 'dropped', 'auto-redacted'])
+// Decisions the model never read the value under, and those it read a placeholder for.
+const CUT: ReadonlySet<Decision> = new Set(['redacted', 'hidden', 'dropped', 'auto-redacted', 'withheld'])
+const MODEL_READ: ReadonlySet<Decision> = new Set(['redacted', 'auto-redacted'])
 
 type ScanResult = { isScanned: true; leaks: Leak[] } | { isScanned: false; reason: string }
+
+/** The text a finding was made in, so the journal can say where it stood. */
+type Origin = { text: string; leaks: readonly Leak[]; file?: string; isFileText?: boolean }
 
 // A tool's output is scanned at tool.call and again as its row is appended:
 // the second look is answered from here, by the text's hash.
@@ -85,10 +94,17 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => drawPane($, e))
 
+  // The system prompt: every section checked (env details, instructions other
+  // plugins add), then the guard's own note for the model.
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
+    const sections = []
+    for (const section of composed.sections) {
+      const text = await scrubAsking($, section.text, t.systemPrompt(section.id))
+      sections.push(text === section.text ? section : { ...section, text })
+    }
 
-    return { ...composed, sections: [...composed.sections, { id: 'secret-guard', text: NOTE, scope: 'session' }] }
+    return { ...composed, sections: [...sections, { id: 'secret-guard', text: NOTE, scope: 'session' }] }
   })
 
   // A tool's output, after the tool ran and before the model reads it. A cut
@@ -116,9 +132,15 @@ export const register: Register = (on, options) => {
 
     const found = await unresolved($, result.leaks)
     if (found.length === 0) return ran
+    const input = e as unknown as Record<string, unknown>
+    const origin: Origin = {
+      text: ran.text,
+      leaks: result.leaks,
+      ...(typeof input.file_path === 'string' ? { file: input.file_path } : {}),
+    }
     const { known, novel } = await splitKnown($, found)
     if (novel.length === 0) {
-      await record($, source, known, 'redacted')
+      await record($, source, known, 'redacted', origin)
 
       return cutOutput($, ran, known, String(e.tool))
     }
@@ -126,20 +148,20 @@ export const register: Register = (on, options) => {
     const choice = await ask($, t.toolQuestion(source, novel), t.toolOptions, 'redact', 'hide')
     if (choice === 'hide') {
       await numbersFor($, found)
-      await record($, source, found, 'hidden')
+      await record($, source, found, 'hidden', origin)
 
       return { deny: hiddenNote(String(e.tool), found) }
     }
     if (choice === 'pass' || choice === 'allow') {
       const reason = choice === 'pass' ? 'passed' : 'allowlisted'
       await allow($, novel, reason)
-      await record($, source, novel, reason)
-      await record($, source, known, 'redacted')
+      await record($, source, novel, reason, origin)
+      await record($, source, known, 'redacted', origin)
 
       return known.length === 0 ? ran : cutOutput($, ran, known, String(e.tool))
     }
     await numbersFor($, found)
-    await record($, source, found, 'redacted')
+    await record($, source, found, 'redacted', origin)
 
     return cutOutput($, ran, found, String(e.tool))
   }).catch(($, e, next) =>
@@ -179,11 +201,12 @@ export const register: Register = (on, options) => {
 
     const found = await unresolved($, result.leaks)
     if (found.length === 0) return next(e)
+    const origin: Origin = { text: e.text, leaks: result.leaks }
     const { known, novel } = await splitKnown($, found)
     const choice = novel.length === 0 ? 'redact' : await ask($, t.promptQuestion(novel), t.promptOptions, 'redact', 'cancel')
     if (choice === 'cancel') {
       await numbersFor($, found)
-      await record($, t.prompt, found, 'dropped')
+      await record($, t.prompt, found, 'dropped', origin)
       await refill($, e.text)
 
       return { drop: t.promptDropped }
@@ -191,11 +214,11 @@ export const register: Register = (on, options) => {
     if (choice === 'send' || choice === 'allow') {
       const reason = choice === 'send' ? 'passed' : 'allowlisted'
       await allow($, novel, reason)
-      await record($, t.prompt, novel, reason)
+      await record($, t.prompt, novel, reason, origin)
     }
     const cut = choice === 'redact' ? found : known
     const cuts = await cutsFor($, cut)
-    await record($, t.prompt, cut, 'redacted')
+    await record($, t.prompt, cut, 'redacted', origin)
 
     return next({ ...e, text: redact(e.text, cuts) })
   }).catch(($, e, next) =>
@@ -221,10 +244,11 @@ export const register: Register = (on, options) => {
     if (novel.length === 0) return next(e)
 
     const source = `@${e.mention}`
+    const origin: Origin = { text, leaks: result.leaks, file: e.path, isFileText: true }
     const choice = await ask($, t.mentionQuestion(source, novel), t.mentionOptions, 'redact', 'skip')
     if (choice === 'skip') {
       await numbersFor($, found)
-      await record($, source, found, 'dropped')
+      await record($, source, found, 'dropped', origin)
       $.ui.toast(t.mentionSkipped(source))
 
       return { deny: MENTION_SKIPPED }
@@ -232,12 +256,12 @@ export const register: Register = (on, options) => {
     if (choice === 'pass' || choice === 'allow') {
       const reason = choice === 'pass' ? 'passed' : 'allowlisted'
       await allow($, novel, reason)
-      await record($, source, novel, reason)
+      await record($, source, novel, reason, origin)
 
       return next(e)
     }
     await numbersFor($, found)
-    await record($, source, found, 'redacted')
+    await record($, source, found, 'redacted', origin)
 
     return next(e)
   }).catch(($, e, next) =>
@@ -248,7 +272,10 @@ export const register: Register = (on, options) => {
     const ran = await next(e)
     if (ran.text === null || ran.text === '') return ran
 
-    return { text: await scrubAsking($, ran.text, t.attachment(e.type)) }
+    const file = pathIn(ran.text)
+    const where = file === undefined ? undefined : shortPath(file, await $.session.root())
+
+    return { text: await scrubAsking($, ran.text, t.attachment(e.type, where), file) }
   }).catch(() => ({ text: withheld('the check of this attachment failed') }))
 
   on('prompt.context', async ($, e, next) => {
@@ -414,7 +441,7 @@ async function allow($: EngineInterface, found: readonly Found[], reason: 'passe
  * is cut and journaled, a known one cut again, and a text the scanner could
  * not check is withheld whole.
  */
-async function scrubQuietly($: EngineInterface, text: string, source: string): Promise<string> {
+async function scrubQuietly($: EngineInterface, text: string, source: string, file?: string): Promise<string> {
   if (passedTexts.has(await hashOf(text))) return text
   const result = await scanText($, text)
   if (!result.isScanned) {
@@ -424,11 +451,11 @@ async function scrubQuietly($: EngineInterface, text: string, source: string): P
     return withheld(result.reason)
   }
 
-  return cutFound($, text, source, await unresolved($, result.leaks))
+  return cutFound($, source, await unresolved($, result.leaks), { text, leaks: result.leaks, file })
 }
 
 /** As scrubQuietly, but a text the scanner could not check is the person's to pass. */
-async function scrubAsking($: EngineInterface, text: string, source: string): Promise<string> {
+async function scrubAsking($: EngineInterface, text: string, source: string, file?: string): Promise<string> {
   if (passedTexts.has(await hashOf(text))) return text
   const result = await scanText($, text)
   if (!result.isScanned) {
@@ -443,15 +470,16 @@ async function scrubAsking($: EngineInterface, text: string, source: string): Pr
     return withheld(result.reason)
   }
 
-  return cutFound($, text, source, await unresolved($, result.leaks))
+  return cutFound($, source, await unresolved($, result.leaks), { text, leaks: result.leaks, file })
 }
 
-async function cutFound($: EngineInterface, text: string, source: string, found: readonly Found[]): Promise<string> {
+async function cutFound($: EngineInterface, source: string, found: readonly Found[], origin: Origin): Promise<string> {
+  const { text } = origin
   if (found.length === 0) return text
   const { novel } = await splitKnown($, found)
   const cuts = await cutsFor($, found)
   if (novel.length > 0) {
-    await record($, source, novel, 'auto-redacted')
+    await record($, source, novel, 'auto-redacted', origin)
     $.ui.toast(t.autoCut(novel[0]?.leak.rule ?? 'secret', source))
   }
 
@@ -494,10 +522,33 @@ async function refill($: EngineInterface, text: string): Promise<void> {
 
 // --- the journal ----------------------------------------------------------
 
-async function record($: EngineInterface, source: string, found: readonly Found[], decision: Decision): Promise<void> {
+/**
+ * Adds one journal row per secret, with where it stood in `origin`'s text:
+ * the file and line when the text says which, and the lines around it with
+ * every secret masked.
+ */
+async function record(
+  $: EngineInterface,
+  source: string,
+  found: readonly Found[],
+  decision: Decision,
+  origin?: Origin,
+): Promise<void> {
   if (found.length === 0) return
   const numbers = await read($, labels)
   const at = await $.clock.now()
+  const root = origin === undefined ? '' : await $.session.root()
+  const placeOf = (leak: Leak) => {
+    if (origin === undefined) return {}
+    const where = excerpt(origin.text, origin.leaks, leak, { file: origin.file, isFileText: origin.isFileText })
+
+    return {
+      ...(where.file === undefined ? {} : { file: shortPath(where.file, root) }),
+      line: where.line,
+      isFileLine: where.isFileLine,
+      lines: where.lines,
+    }
+  }
   await update($, entries, list => {
     let seq = list.at(-1)?.seq ?? 0
     const added: Entry[] = uniqueByHash(found).map(({ leak, hash }) => ({
@@ -509,6 +560,7 @@ async function record($: EngineInterface, source: string, found: readonly Found[
       mask: mask(leak.secret),
       hash,
       decision,
+      ...placeOf(leak),
     }))
 
     return [...list, ...added].slice(-MAX_ENTRIES)
@@ -546,51 +598,72 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
   const allowList = await read($, allowed)
   const state = await read($, scanner)
   const allowedHashes = new Set(allowList.map(one => one.hash))
-  const room = Math.max(3, Math.floor(((e.viewport?.rows ?? 30) - 8 - allowList.length) / 2))
-  const shown = journal.slice(-room).reverse()
+  const width = Math.max(24, 'bodyColumns' in e.props && typeof e.props.bodyColumns === 'number' ? e.props.bodyColumns : 60)
+  const shown = journal.slice(-50).reverse()
+  const allowEntry = (entry: Entry) =>
+    update($, allowed, list =>
+      list.some(one => one.hash === entry.hash)
+        ? list
+        : [...list, { hash: entry.hash, rule: entry.rule, mask: entry.mask, reason: 'allowlisted' as const }],
+    )
 
   return (
-    <Box flexDirection="column">
-      <Text color={state.status === 'missing' ? 'error' : 'success'}>
+    <Box flexDirection="column" width={width}>
+      <Text wrap="wrap" color={state.status === 'missing' ? 'error' : 'success'}>
         {state.status === 'missing' ? state.detail : t.pane.scanner(state.detail || 'gitleaks')}
+      </Text>
+      <Text wrap="wrap" dimColor>
+        {t.pane.intro}
       </Text>
       <Text> </Text>
       <Text bold>{t.pane.findings(journal.length)}</Text>
       {shown.length === 0 && <Text dimColor>{t.pane.none}</Text>}
       {shown.map(entry => (
-        <Box key={`entry-${entry.seq}`} flexDirection="column">
-          <Text>
+        <Box key={`entry-${entry.seq}`} flexDirection="column" marginTop={1}>
+          <Text wrap="wrap" bold>
             {clock(entry.at)} {entry.rule}
-            {entry.label > 0 ? ` #${entry.label}` : ''} · {t.decisions[entry.decision]}
+            {entry.label > 0 ? ` #${entry.label}` : ''} {entry.mask}
           </Text>
-          <Box flexDirection="row">
-            <Text dimColor>
-              {'  '}
-              {entry.mask} · {entry.source}{' '}
+          <Text wrap="wrap" color={CUT.has(entry.decision) ? 'success' : 'warning'}>
+            {t.decisions[entry.decision]}
+          </Text>
+          <Text wrap="wrap" dimColor>
+            {entry.source}
+          </Text>
+          {entry.line !== undefined && (
+            <Text wrap="wrap">
+              {entry.file !== undefined && entry.isFileLine === true
+                ? t.pane.at(entry.file, entry.line)
+                : `${entry.file === undefined ? '' : `${entry.file} · `}${t.pane.textLine(entry.line)}`}
             </Text>
-            {ALLOWABLE.has(entry.decision) && entry.hash !== '' && !allowedHashes.has(entry.hash) && (
-              <Button
-                key={`allow-${entry.seq}`}
-                label={t.pane.allowButton}
-                onPress={() =>
-                  update($, allowed, list =>
-                    list.some(one => one.hash === entry.hash)
-                      ? list
-                      : [...list, { hash: entry.hash, rule: entry.rule, mask: entry.mask, reason: 'allowlisted' as const }],
-                  )
-                }
-              />
-            )}
-          </Box>
+          )}
+          {(entry.lines ?? []).map((line, index) => (
+            <Text key={`line-${entry.seq}-${index}`} wrap="wrap" dimColor={!line.isHit} bold={line.isHit}>
+              {line.isHit ? '› ' : '  '}
+              {line.text.replace(/\t/g, '  ')}
+            </Text>
+          ))}
+          {MODEL_READ.has(entry.decision) && entry.label > 0 && (
+            <Text wrap="wrap" dimColor>
+              {t.pane.modelRead(`[SECRET:${entry.rule}#${entry.label}]`)}
+            </Text>
+          )}
+          {ALLOWABLE.has(entry.decision) && entry.hash !== '' && !allowedHashes.has(entry.hash) && (
+            <Button key={`allow-${entry.seq}`} label={t.pane.allowButton} onPress={() => allowEntry(entry)} />
+          )}
         </Box>
       ))}
       <Text> </Text>
       <Text bold>{t.pane.allowlist(allowList.length)}</Text>
-      {allowList.length === 0 && <Text dimColor>{t.pane.allowEmpty}</Text>}
+      {allowList.length === 0 && (
+        <Text wrap="wrap" dimColor>
+          {t.pane.allowEmpty}
+        </Text>
+      )}
       {allowList.map(one => (
-        <Box key={`allowed-${one.hash}`} flexDirection="row">
-          <Text>
-            {one.rule} {one.mask} · {one.reason === 'passed' ? t.pane.passed : t.pane.notSecret}{' '}
+        <Box key={`allowed-${one.hash}`} flexDirection="column" marginTop={1}>
+          <Text wrap="wrap">
+            {one.rule} {one.mask} · {one.reason === 'passed' ? t.pane.passed : t.pane.notSecret}
           </Text>
           <Button
             key={`forget-${one.hash}`}
@@ -599,7 +672,10 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
           />
         </Box>
       ))}
-      <Text dimColor>{t.pane.allowHint}</Text>
+      <Text> </Text>
+      <Text wrap="wrap" dimColor>
+        {t.pane.allowHint}
+      </Text>
     </Box>
   )
 }

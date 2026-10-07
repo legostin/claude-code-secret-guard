@@ -34,7 +34,8 @@ secret-guard puts a checkpoint between your machine and the model:
 | Output of any tool: Bash, Read, Grep, WebFetch, MCP tools, subagents | `tool.call` | Dialog: cut / hide whole output / pass / not a secret |
 | Your own prompt (a pasted key) | `prompt.submit` | Dialog: cut / send as is / don't send (the text goes back to the input box) |
 | A file mentioned with `@path` | `prompt.mention` | Dialog: cut / don't attach / attach as is |
-| CLAUDE.md, reminders, injected attachments | `prompt.context`, `prompt.attachment` | Cut automatically and journaled |
+| CLAUDE.md, reminders, injected attachments (a changed-file note, a queued prompt…) | `prompt.context`, `prompt.attachment` | Cut automatically and journaled |
+| The system prompt's sections | `prompt.compose` | Cut automatically and journaled |
 | Every other row stored in the conversation | `session.append` | Safety net: cut automatically |
 
 gitleaks also decodes base64, hex and percent-encoding (up to 5 levels), so `cat .env | base64` is caught too. A line that carries an encoded secret is withheld as a whole.
@@ -62,7 +63,14 @@ Answer `y` to add the marketplace, then pick a scope (user scope protects every 
 
 ## Use
 
-- **`/secrets`** opens the side pane. It shows the scanner status, every finding with its mask, source and your decision, and the allowlist. Mark false positives as *not a secret*, or remove entries from the allowlist.
+- **`/secrets`** opens the side pane. For every finding it shows:
+  - the rule and the mask;
+  - what happened, in plain words;
+  - where it came from: the **file and line** when the text says (a Read, a Grep match, a changed-file note, an `@`-file), otherwise the line of the output;
+  - **the line itself and two lines around it**, with every secret masked;
+  - what the model read instead.
+
+  A false positive can be marked *allow from now on*; *stop allowing* takes it back.
 - The **status line** shows `secret-guard: N hidden · /secrets` once something has been withheld. If gitleaks is missing, it shows the install command.
 - **Language.** The dialogs and the pane speak English or Russian. Run `/plugin configure secret-guard@secret-guard`, or set it in `settings.json`:
   ```json

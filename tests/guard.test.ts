@@ -229,6 +229,22 @@ describe('prompt', () => {
 })
 
 describe('pane', () => {
+  test('shows the file, the line and the lines around a finding, never the value', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    const read = ['     1\t# settings', `     2\tGITHUB_TOKEN=${TOKEN}`, '     3\tDEBUG=1'].join('\n')
+    world(on, w, read)
+    on('tool.call', { tool: 'Read' }, () => ({ result: { type: 'text', file: { content: read } }, text: read }))
+
+    await $.tool.call({ tool: 'Read', file_path: '/project/config/.env' })
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    expect(await ui.find({ type: 'Text', text: /config\/\.env, line 2/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /GITHUB_TOKEN=ghp_…\[40\]/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /DEBUG=1/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /the model read: \[SECRET:github-pat#1\]/ })).toBeDefined()
+    expect(JSON.stringify(await ui.drawn())).not.toContain(TOKEN)
+    await ui.unmount()
+  })
+
   test('lists a finding by mask, and "не секрет" allowlists it', async ($, on) => {
     const w: World = { answer: 'Cut the secrets', questions: [] }
     world(on, w, OUTPUT)
@@ -261,5 +277,32 @@ describe('language', () => {
     const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
     expect(await ui.find({ type: 'Text', text: /Находки \(1\)/ })).toBeDefined()
     await ui.unmount()
+  })
+})
+
+describe('system prompt', () => {
+  test('a secret in a section is cut, the guard note is added last', async ($, on) => {
+    const w: World = { questions: [] }
+    world(on, w, OUTPUT)
+    on('prompt.compose', () => ({
+      sections: [
+        { id: 'intro', text: 'You are a helpful agent.', scope: 'shared' },
+        { id: 'env', text: `Deploy token: ${TOKEN}`, scope: 'session' },
+      ],
+    }))
+
+    const composed = await $.prompt.compose({
+      model: 'claude-opus-5-5',
+      promptModel: 'claude-opus-5-5',
+      surfaces: ['terminal'],
+      tools: ['Bash'],
+      outputStyle: { name: 'default', isKeepingCodingInstructions: true },
+      traits: [],
+    })
+    const text = JSON.stringify(composed)
+    expect(text).not.toContain(TOKEN)
+    expect(text).toContain('Deploy token: [SECRET:github-pat#1]')
+    expect(composed.sections.at(-1)?.id).toBe('secret-guard')
+    expect(w.questions).toHaveLength(0)
   })
 })
