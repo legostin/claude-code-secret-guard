@@ -258,6 +258,19 @@ export function excerpt(
   return { file: where.file, line: start, isFileLine: where.isFileText === true, isNumbered: false, lines: shown }
 }
 
+// The guard's own marks in a text: a placeholder the model read, a mask the
+// person saw (`ghp_…[40]`, `…[12]`).
+const OWN_MARKS = /\[SECRET:[^\]\n]{1,160}\]|\S{0,4}…\[\d{1,4}\]/g
+
+/**
+ * The text with the guard's own placeholders and masks blanked to spaces of
+ * the same length, so a scan finds nothing in them ("SECRET:" read as a
+ * keyword) and every line and column stays where it was.
+ */
+export function withoutOwnMarks(text: string): string {
+  return text.replace(OWN_MARKS, mark => ' '.repeat(mark.length))
+}
+
 /** A content block of a stored row, as `session.append` hands it. */
 export type Block = { type: string; [field: string]: unknown }
 

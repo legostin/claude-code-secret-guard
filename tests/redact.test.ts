@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { excerpt, mapTexts, mask, parseReport, placeholder, redact, redactRecord, uniqueByHash, WHOLE } from '../hooks/redact'
+import { excerpt, mapTexts, mask, parseReport, placeholder, redact, redactRecord, uniqueByHash, WHOLE, withoutOwnMarks } from '../hooks/redact'
 import type { Leak } from '../hooks/redact'
 
 const TOKEN = 'ghp_8x2LmQ7vN4pR9sT1wY6zA3bC5dE0fG2hJ4kM'
@@ -199,5 +199,16 @@ describe('excerpt', () => {
     const shown = JSON.stringify(where)
     expect(shown).not.toContain('MIIEvQIBADANBgkqhkiG9w0BAQEFAASC')
     expect(shown).not.toContain(TOKEN)
+  })
+})
+
+describe('withoutOwnMarks', () => {
+  test('blanks placeholders and masks to spaces of the same length', () => {
+    const text = "x=[SECRET:github-pat#1] y=ghp_…[40] z=…[12] keep"
+    const out = withoutOwnMarks(text)
+    expect(out.length).toBe(text.length)
+    expect(out).not.toMatch(/SECRET|…/)
+    expect(out.startsWith('x=' + ' '.repeat(21) + ' y=' + ' '.repeat(9) + ' ')).toBe(true)
+    expect(out.endsWith(' keep')).toBe(true)
   })
 })

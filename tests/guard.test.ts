@@ -30,8 +30,9 @@ type World = {
   isScannerBroken?: boolean
   questions: string[]
   rows?: unknown[]
-  /** The environment each gitleaks scan ran with. */
+  /** The environment each gitleaks scan ran with, and the text it read. */
   envs?: Record<string, string>[]
+  scanned?: string[]
   /** Whether the project has a .gitleaks.toml, and what the person's environment holds. */
   hasProjectConfig?: boolean
   variables?: Record<string, string>
@@ -65,6 +66,7 @@ function world(on: On, w: World, output: string) {
     if (w.isScannerBroken) throw new Error('spawn gitleaks ENOENT')
     if (e.argv[1] === 'version') return { value: ran('8.30.1\n') }
     ;(w.envs ??= []).push({ ...(e.init?.env ?? {}) })
+    ;(w.scanned ??= []).push(e.init?.stdin ?? '')
 
     return { value: ran(report(e.init?.stdin ?? '')) }
   })
@@ -74,7 +76,7 @@ function world(on: On, w: World, output: string) {
     w.questions.push(question)
     if (w.answer === undefined) return { deny: 'The user dismissed the dialog' }
 
-    return { result: { questions: e.questions, answers: { [question]: w.answer } } }
+    return { result: { questions: e.questions, answers: { [question]: w.answer } }, text: `${question} → ${w.answer}` }
   })
   on('tool.call', { tool: 'Bash' }, () => ({
     result: { stdout: output, stderr: '', interrupted: false },
@@ -601,6 +603,33 @@ describe('history across sessions', () => {
     await ui.press({ key: 'clear-history' })
     expect(await ui.find({ type: 'Text', text: /No history yet/ })).toBeDefined()
     await ui.press({ key: 'tab-session' })
+    expect(await ui.find({ type: 'Text', text: /Secrets this session \(1\)/ })).toBeDefined()
+    await ui.unmount()
+  })
+})
+
+describe('the guard\'s own marks', () => {
+  test('placeholders and masks reach the scanner as spaces, lines and columns kept', async ($, on) => {
+    const w: World = { questions: [] }
+    world(on, w, OUTPUT)
+    const text = 'пароль [SECRET:random-word#2]{w\nключ ghp_…[40] тут'
+    await append($, w, text)
+
+    const seen = w.scanned?.find(one => one.length === text.length) ?? ''
+    expect(seen).not.toContain('SECRET:')
+    expect(seen).not.toContain('…[40]')
+    expect(seen.split('\n').map(line => line.length)).toEqual(text.split('\n').map(line => line.length))
+  })
+
+  test('the guard\'s own dialog is not scanned, and adds nothing to the registry', async ($, on) => {
+    const w: World = { answer: 'Cut the secrets', questions: [] }
+    world(on, w, OUTPUT)
+    on('prompt.submit', ($, e) => ({ text: e.text }))
+    await $.prompt.submit({ text: `use this token ${TOKEN} please`, wait: false, origin: { kind: 'composer' } })
+
+    expect(w.questions).toHaveLength(1)
+    expect(w.scanned?.some(one => one.includes('What should be sent?'))).toBe(false)
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
     expect(await ui.find({ type: 'Text', text: /Secrets this session \(1\)/ })).toBeDefined()
     await ui.unmount()
   })

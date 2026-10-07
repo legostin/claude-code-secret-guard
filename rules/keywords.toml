@@ -24,7 +24,12 @@ regexes = [
   '''^\*+$''',
   '''(?i)^(changeme|example|placeholder|redacted|xxx+|your[_-]?\w*)$''',
   '''(?i)(?:password|passwd|passphrase|pwd|secret|token|пароль|парол|секрет|токен)''',
+  '''^[(\[{]''',
+  '''…''',
 ]
+[[rules.allowlists]]
+regexTarget = "match"
+regexes = ['''(?i)secret:[\w-]+#\d''']
 
 [[rules]]
 id = "credentials-pair"

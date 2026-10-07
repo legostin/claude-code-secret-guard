@@ -16,7 +16,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, EventOf, Register, ToolCallResult } from 'claude-code'
 
 import type { Decision, Entry, HistoryEntry, Known } from '../types'
-import { excerpt, hashOf, mapTexts, mask, parseReport, placeholder, redact, redactRecord, uniqueByHash } from './redact'
+import { excerpt, hashOf, mapTexts, mask, parseReport, placeholder, redact, redactRecord, uniqueByHash, withoutOwnMarks } from './redact'
 import { configWith } from './rules'
 import { randomWords } from './words'
 import type { RuleSet } from './rules'
@@ -147,6 +147,8 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
     if (ran.deny !== undefined || ran.text === undefined || ran.text === '') return ran
+    // The guard's own dialog: its question names masks, never a value.
+    if (isOwnDialog(e as unknown as Record<string, unknown>)) return ran
 
     const who = e.agentId === undefined ? '' : t.subagentPrefix
     const source = describeCall(String(e.tool), e as unknown as Record<string, unknown>, who)
@@ -343,7 +345,7 @@ async function scanText($: EngineInterface, text: string): Promise<ScanResult> {
   for (const bin of gitleaks === undefined ? GITLEAKS_PATHS : [gitleaks]) {
     let ran
     try {
-      ran = await $.process.run([bin, ...GITLEAKS_ARGS], { cwd, env, stdin: text, timeoutMs: 20_000 })
+      ran = await $.process.run([bin, ...GITLEAKS_ARGS], { cwd, env, stdin: withoutOwnMarks(text), timeoutMs: 20_000 })
     } catch (error) {
       reason = `${bin}: ${messageOf(error)}`
       continue
@@ -410,6 +412,17 @@ async function probe($: EngineInterface): Promise<void> {
   }
   await update($, scanner, () => ({ status: 'missing', detail: t.missing }))
   await refreshStatus($)
+}
+
+/** An AskUserQuestion call the guard raised itself, by the header it gives its dialogs. */
+function isOwnDialog(input: Record<string, unknown>): boolean {
+  const questions = input.questions
+
+  return (
+    input.tool === 'AskUserQuestion' &&
+    Array.isArray(questions) &&
+    questions.some(one => (one as { header?: unknown } | null)?.header === t.header)
+  )
 }
 
 /** gitleaks' leaks and the random-looking words it did not already cover. */

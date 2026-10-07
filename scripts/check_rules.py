@@ -118,6 +118,11 @@ def main() -> None:
         'access over IPv6': 'access over IPv6 2001:db8::1',
         'access point MAC address': 'access point mac 00:1A:2B:3C:4D:5E',
         'auth: env variable pair': 'auth: ${DB_USER}:${DB_PASS}',
+        'the guard\'s own dialog': 'В вашем промпте найдены секреты (random-word …[12]). Что отправить модели?',
+        'the guard\'s own placeholder after a keyword': 'пароль [SECRET:random-word#2]',
+        'the guard\'s placeholder alone': 'value: [SECRET:random-word#2]{w',
+        'SECRET: inside a placeholder': 'SECRET:random-word#2]{w',
+        'a mask after a keyword': 'password: ghp_…[40]',
         'an allowlist entry': "regexes = ['^\\$', '(?i)^(password|pass|secret|changeme|xxx+)$']",
     }
 
