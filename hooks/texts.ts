@@ -104,6 +104,8 @@ export type Texts = {
     forgetAll: string
     cutButton: string
     tabSession: string
+    pendingTitle: string
+    pendingLegend: string
     tabHistory: string
     historyHint: string
     historyNone: string
@@ -228,6 +230,8 @@ const EN: Texts = {
     forgetAll: 'forget all',
     cutButton: 'cut again',
     tabSession: 'This session',
+    pendingTitle: 'Waiting for your answer in the dialog',
+    pendingLegend: 'The model has read none of this yet; the text, values masked (› the line with the secret):',
     tabHistory: 'All history',
     historyHint: 'Every session on this machine, newest first, up to 400 events. Kept on disk: masks and the lines around, never a value or a hash.',
     historyNone: 'No history yet.',
@@ -338,6 +342,8 @@ const RU: Texts = {
     forgetAll: 'забыть все',
     cutButton: 'снова вырезать',
     tabSession: 'Эта сессия',
+    pendingTitle: 'Ждёт вашего ответа в диалоге',
+    pendingLegend: 'Модель ещё ничего из этого не получила; текст, значения замаскированы (› строка с секретом):',
     tabHistory: 'Вся история',
     historyHint: 'Все сессии на этой машине, новые сверху, до 400 событий. Хранится на диске: маски и строки вокруг, никогда не значения и не хэши.',
     historyNone: 'Истории пока нет.',

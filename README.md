@@ -77,6 +77,7 @@ Answer `y` to add the marketplace, then pick a scope (user scope protects every 
 
 ## Use
 
+- **While a dialog is open**, the pane opens on its own and shows, at its top, what the question is about: the source, `file:line`, the lines around with the value masked, and *show the value*. It goes once you answer.
 - **`/secrets`** opens the side pane. It has two tabs.
 
   **This session** is the registry: every value met, listed once, with its status (*cut without a question* or *the model sees it*), how often it was seen and where last. For each value:

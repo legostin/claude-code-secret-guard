@@ -44,6 +44,7 @@ Secrets (API keys, tokens, private keys, passwords) must not reach the model, no
 
 - `entries`: the journal: masks (`ghp_…[40]`), SHA-256 prefixes, sources, decisions, and where each secret stood: the file and line (from a Read's numbering, a Grep match, a changed-file note, an `@`-file) and the lines around it as the model read them (`excerpt`: a placeholder where it was cut, a mask where the model may read the value); never values.
 - `expanded`: the log entries opened in the pane; `revealed`: the secrets whose value is shown, by hash.
+- `pending`: what the open dialog asks about (source, file and line, masked lines), set before `$.ui.ask` and cleared after; the pane opens on its own to show it.
 - `tab`, `openedHistory`, `historyVersion`: the pane's tab, the history events opened, and a counter bumped when the stored history changes (a `$.store` read does not redraw the pane by itself).
 
 `$.store` (on disk, across sessions) holds `history`: the last 400 journal rows of every session, each with its session id and project, without the hash, and with only the lines near the secret.
@@ -64,7 +65,7 @@ Raw values exist only in the module's memory, while a text is checked, plus a 64
 
 ## Verification
 
-- `claude plugin test .`: 65 tests. `scripts/check_rules.py`: the extra rules against real gitleaks. Pure helpers, plus hooks over the engine's test kit with gitleaks and the dialog stubbed: cut / hide / dismiss / pass / repeat secret / scanner failure / prompt cut / prompt cancel / pane and allowlist / file, line and masked lines in the pane / system prompt / Russian texts.
+- `claude plugin test .`: 66 tests. `scripts/check_rules.py`: the extra rules against real gitleaks. Pure helpers, plus hooks over the engine's test kit with gitleaks and the dialog stubbed: cut / hide / dismiss / pass / repeat secret / scanner failure / prompt cut / prompt cancel / pane and allowlist / file, line and masked lines in the pane / system prompt / Russian texts.
 - Live, against Claude Code 2.1.292 and gitleaks 8.30.1, with `claude -p --plugin-dir`:
   1. `cat` of a file holding a GitHub token: the dialog cannot be shown, the output is hidden; the model answers that it never saw the content; the token occurs **0 times** in the transcript file.
   2. The same with *dismiss → cut* forced, on a file with a plain token and a base64-encoded one: the model quotes `GITHUB_TOKEN=[SECRET:…#1]` and `[SECRET:github-pat#…: encoded secret, line withheld]`; plain, base64 and decoded values occur **0 times** in the transcript.

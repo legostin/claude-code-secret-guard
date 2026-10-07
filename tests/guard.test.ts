@@ -39,6 +39,9 @@ type World = {
   /** What the plugin's store holds at the start, and every value written to it. */
   store?: Record<string, unknown>
   stored?: string[]
+  /** Runs while the dialog is open, before it is answered. */
+  whileAsked?: () => Promise<void>
+  opened?: string[]
 }
 
 /** Stands for gitleaks, the dialog, a Bash run and the store beneath the plugin. */
@@ -58,6 +61,10 @@ function world(on: On, w: World, output: string) {
   })
   on('store.keys', () => ({ value: [...store.keys()] }))
   on('session.id', () => ({ value: 'f00dcafe-1234-5678-9abc-def012345678' }))
+  on('ui.open', ($, e) => {
+    ;(w.opened ??= []).push(e.id)
+    return { value: { isPlaced: true } }
+  })
   mock.env(on, w.variables ?? {})
   on('fs.exists', () => ({ value: w.hasProjectConfig === true }))
   on('ui.status', () => ({ value: undefined }))
@@ -71,9 +78,10 @@ function world(on: On, w: World, output: string) {
     return { value: ran(report(e.init?.stdin ?? '')) }
   })
   on('session.root', () => ({ value: '/project' }))
-  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e) => {
     const question = e.questions[0]?.question ?? ''
     w.questions.push(question)
+    await w.whileAsked?.()
     if (w.answer === undefined) return { deny: 'The user dismissed the dialog' }
 
     return { result: { questions: e.questions, answers: { [question]: w.answer } }, text: `${question} → ${w.answer}` }
@@ -631,6 +639,36 @@ describe('the guard\'s own marks', () => {
     expect(w.scanned?.some(one => one.includes('What should be sent?'))).toBe(false)
     const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
     expect(await ui.find({ type: 'Text', text: /Secrets this session \(1\)/ })).toBeDefined()
+    await ui.unmount()
+  })
+})
+
+describe('while the dialog is open', () => {
+  test('the pane opens and shows where the secret stands, value masked; gone once answered', async ($, on) => {
+    const read = ['     1\t# settings', `     2\tGITHUB_TOKEN=${TOKEN}`, '     3\tDEBUG=1'].join('\n')
+    let drawnWhileAsked = ''
+    const w: World = {
+      answer: 'Cut the secrets',
+      questions: [],
+      whileAsked: async () => {
+        const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+        drawnWhileAsked = JSON.stringify(await ui.drawn())
+        await ui.unmount()
+      },
+    }
+    world(on, w, read)
+    on('tool.call', { tool: 'Read' }, () => ({ result: { type: 'text', file: { content: read } }, text: read }))
+
+    await $.tool.call({ tool: 'Read', file_path: '/project/config/.env' })
+    expect(w.opened).toContain('secret-guard')
+    expect(drawnWhileAsked).toContain('Waiting for your answer in the dialog')
+    expect(drawnWhileAsked).toContain('config/.env:2')
+    expect(drawnWhileAsked).toContain('GITHUB_TOKEN=ghp_…[40]')
+    expect(drawnWhileAsked).toContain('DEBUG=1')
+    expect(drawnWhileAsked).not.toContain(TOKEN)
+
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'terminal', ...PANE })
+    expect(JSON.stringify(await ui.drawn())).not.toContain('Waiting for your answer')
     await ui.unmount()
   })
 })

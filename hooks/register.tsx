@@ -15,7 +15,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, EventOf, Register, ToolCallResult } from 'claude-code'
 
-import type { Decision, Entry, HistoryEntry, Known } from '../types'
+import type { Decision, Entry, HistoryEntry, Known, Pending, Place } from '../types'
 import { excerpt, hashOf, mapTexts, mask, parseReport, placeholder, redact, redactRecord, uniqueByHash, withoutOwnMarks } from './redact'
 import { configWith } from './rules'
 import { randomWords } from './words'
@@ -47,6 +47,7 @@ const scanner = atom({ plugin: 'secret-guard', key: 'scanner' } as const, { stat
 const expanded = atom({ plugin: 'secret-guard', key: 'expanded' } as const, [])
 const revealed = atom({ plugin: 'secret-guard', key: 'revealed' } as const, [])
 const tab = atom({ plugin: 'secret-guard', key: 'tab' } as const, 'session')
+const pending = atom({ plugin: 'secret-guard', key: 'pending' } as const, null)
 const openedHistory = atom({ plugin: 'secret-guard', key: 'openedHistory' } as const, [])
 const historyVersion = atom({ plugin: 'secret-guard', key: 'historyVersion' } as const, 0)
 
@@ -180,7 +181,7 @@ export const register: Register = (on, options) => {
       return cutOutput($, ran, known, String(e.tool))
     }
 
-    const choice = await ask($, t.toolQuestion(source, novel), t.toolOptions, 'redact', 'hide')
+    const choice = await askAbout($, source, novel, origin, t.toolQuestion(source, novel), t.toolOptions, 'redact', 'hide')
     if (choice === 'hide') {
       await numbersFor($, found)
       await record($, source, found, 'hidden', origin)
@@ -240,7 +241,10 @@ export const register: Register = (on, options) => {
     if (found.length === 0) return next(e)
     const origin: Origin = { text: e.text, leaks }
     const { known, novel } = await splitKnown($, found)
-    const choice = novel.length === 0 ? 'redact' : await ask($, t.promptQuestion(novel), t.promptOptions, 'redact', 'cancel')
+    const choice =
+      novel.length === 0
+        ? 'redact'
+        : await askAbout($, t.prompt, novel, origin, t.promptQuestion(novel), t.promptOptions, 'redact', 'cancel')
     if (choice === 'cancel') {
       await numbersFor($, found)
       await record($, t.prompt, found, 'dropped', origin)
@@ -283,7 +287,7 @@ export const register: Register = (on, options) => {
 
     const source = `@${e.mention}`
     const origin: Origin = { text, leaks: result.leaks, file: e.path, isFileText: true }
-    const choice = await ask($, t.mentionQuestion(source, novel), t.mentionOptions, 'redact', 'skip')
+    const choice = await askAbout($, source, novel, origin, t.mentionQuestion(source, novel), t.mentionOptions, 'redact', 'skip')
     if (choice === 'skip') {
       await numbersFor($, found)
       await record($, source, found, 'dropped', origin)
@@ -625,6 +629,77 @@ async function refill($: EngineInterface, text: string): Promise<void> {
 // --- the journal ----------------------------------------------------------
 
 /**
+ * Where each leak of `origin`'s text stood, as the pane shows it: the file
+ * and line when the text says which, and the lines around it as the model
+ * read them, its placeholder where it was cut, its mask where it was not
+ * (or not yet). The pane never shows a value this way.
+ */
+async function placesIn($: EngineInterface, origin: Origin | undefined): Promise<(leak: Leak) => Place> {
+  if (origin === undefined) return () => ({})
+  const numbers = numbersOf(await read($, known))
+  const root = await $.session.root()
+  const passed = new Set((await read($, allowed)).map(one => one.hash))
+  const hashes = new Map<string, string>()
+  for (const leak of origin.leaks) hashes.set(leak.secret, await hashOf(leak.secret))
+  const withHashes = origin.leaks.map(leak => ({ leak, hash: hashes.get(leak.secret) ?? '' }))
+  const rules = new Map(uniqueByHash(withHashes).map(one => [one.hash, one.leak.rule]))
+  const labelOf = (leak: Leak, isEncodedLine: boolean) => {
+    const hash = hashes.get(leak.secret) ?? ''
+    const number = numbers[hash]
+    if (number === undefined || passed.has(hash)) return isEncodedLine ? '[encoded secret]' : mask(leak.secret)
+
+    return placeholder(rules.get(hash) ?? leak.rule, number, isEncodedLine)
+  }
+
+  return leak => {
+    const where = excerpt(origin.text, origin.leaks, leak, labelOf, { file: origin.file, isFileText: origin.isFileText })
+
+    return {
+      ...(where.file === undefined ? {} : { file: shortPath(where.file, root), filePath: where.file }),
+      line: where.line,
+      isFileLine: where.isFileLine,
+      isNumbered: where.isNumbered,
+      lines: where.lines,
+    }
+  }
+}
+
+/**
+ * Asks about secrets found in `origin`, showing them in the pane while the
+ * dialog is open: the pane opens on its own, and the finding stands at its
+ * top until the person answers.
+ */
+async function askAbout<O extends Record<string, string>>(
+  $: EngineInterface,
+  source: string,
+  found: readonly Found[],
+  origin: Origin,
+  question: string,
+  options: O,
+  fallback: keyof O & string,
+  dismissed: keyof O & string,
+): Promise<keyof O & string> {
+  const placeOf = await placesIn($, origin)
+  for (const { leak, hash } of found) values.set(hash, leak.secret)
+  const shown: Pending = {
+    source,
+    at: await $.clock.now(),
+    items: uniqueByHash(found).map(({ leak, hash }) => ({ hash, rule: leak.rule, mask: mask(leak.secret), ...placeOf(leak) })),
+  }
+  await update($, pending, () => shown)
+  try {
+    await $.ui.open({ id: PANE, title: 'secret-guard' })
+  } catch {
+    // the pane is a help, never a condition of asking
+  }
+  try {
+    return await ask($, question, options, fallback, dismissed)
+  } finally {
+    await update($, pending, () => null)
+  }
+}
+
+/**
  * Adds one journal row per secret, with where it stood in `origin`'s text:
  * the file and line when the text says which, and the lines around it with
  * every secret masked.
@@ -639,34 +714,7 @@ async function record(
   if (found.length === 0) return
   const numbers = numbersOf(await read($, known))
   const at = await $.clock.now()
-  const root = origin === undefined ? '' : await $.session.root()
-
-  // Each leak of the text as the model read it: its placeholder where it was
-  // cut, its mask where the model may read it (the pane never shows a value).
-  const passed = new Set((await read($, allowed)).map(one => one.hash))
-  const hashes = new Map<string, string>()
-  for (const leak of origin?.leaks ?? []) hashes.set(leak.secret, await hashOf(leak.secret))
-  const withHashes = (origin?.leaks ?? []).map(leak => ({ leak, hash: hashes.get(leak.secret) ?? '' }))
-  const rules = new Map(uniqueByHash(withHashes).map(one => [one.hash, one.leak.rule]))
-  const labelOf = (leak: Leak, isEncodedLine: boolean) => {
-    const hash = hashes.get(leak.secret) ?? ''
-    const number = numbers[hash]
-    if (number === undefined || passed.has(hash)) return isEncodedLine ? '[encoded secret]' : mask(leak.secret)
-
-    return placeholder(rules.get(hash) ?? leak.rule, number, isEncodedLine)
-  }
-  const placeOf = (leak: Leak) => {
-    if (origin === undefined) return {}
-    const where = excerpt(origin.text, origin.leaks, leak, labelOf, { file: origin.file, isFileText: origin.isFileText })
-
-    return {
-      ...(where.file === undefined ? {} : { file: shortPath(where.file, root), filePath: where.file }),
-      line: where.line,
-      isFileLine: where.isFileLine,
-      isNumbered: where.isNumbered,
-      lines: where.lines,
-    }
-  }
+  const placeOf = await placesIn($, origin)
   for (const { leak, hash } of found) {
     values.delete(hash)
     values.set(hash, leak.secret)
@@ -789,6 +837,7 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
   const openedPast = new Set(await read($, openedHistory))
   const shownValues = new Set(await read($, revealed))
   const activeTab = await read($, tab)
+  const asking = await read($, pending)
   await read($, historyVersion)
   const allowedBy = new Map(allowList.map(one => [one.hash, one.reason]))
   const width = Math.max(24, 'bodyColumns' in e.props && typeof e.props.bodyColumns === 'number' ? e.props.bodyColumns : 60)
@@ -982,6 +1031,50 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
       />
     </Box>
   )
+  const drawPending = (now: Pending) => (
+    <Box flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1} marginTop={1}>
+      <Text wrap="wrap" bold color="warning">
+        {t.pane.pendingTitle}
+      </Text>
+      <Text wrap="wrap" dimColor>
+        {now.source}
+      </Text>
+      {now.items.map(item => {
+        const place =
+          item.line === undefined
+            ? undefined
+            : item.file !== undefined && item.isFileLine === true
+              ? t.pane.at(item.file, item.line)
+              : `${item.file === undefined ? '' : `${item.file} · `}${t.pane.textLine(item.line)}`
+        const numberOf = (n: number) => (item.isNumbered === true ? '' : `${String(n).padStart(4)}  `)
+
+        return (
+          <Box key={`pending-${item.hash}`} flexDirection="column" marginTop={1}>
+            <Text wrap="wrap" bold>
+              {item.rule} {item.mask}
+            </Text>
+            {place !== undefined && <Text wrap="wrap">{place}</Text>}
+            {item.lines !== undefined && item.lines.length > 0 && (
+              <Text wrap="wrap" dimColor>
+                {t.pane.pendingLegend}
+              </Text>
+            )}
+            {(item.lines ?? []).map(line => (
+              <Text key={`pending-line-${item.hash}-${line.n}`} wrap="wrap" dimColor={!line.isHit} bold={line.isHit}>
+                {line.isHit ? '› ' : '  '}
+                {numberOf(line.n)}
+                {tidy(line.inFile ?? line.text)}
+              </Text>
+            ))}
+            {drawValue(item.hash)}
+            <Box flexDirection="row" marginTop={1}>
+              {revealButton(item.hash, `reveal-pending-${item.hash}`)}
+            </Box>
+          </Box>
+        )
+      })}
+    </Box>
+  )
   const header = (
     <Box flexDirection="column">
       <Text wrap="wrap" color={state.status === 'missing' ? 'error' : 'success'}>
@@ -990,6 +1083,7 @@ async function drawPane($: EngineInterface, e: EventOf['ui.render']) {
       <Text wrap="wrap" dimColor>
         {t.pane.intro}
       </Text>
+      {asking !== null && drawPending(asking)}
       {tabs}
     </Box>
   )

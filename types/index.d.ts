@@ -80,6 +80,23 @@ export type HistoryEntry = Omit<Entry, 'hash' | 'seq'> & {
   project: string
 }
 
+/** Where a secret stands in the text it was found in, as the pane shows it. */
+export type Place = {
+  file?: string
+  filePath?: string
+  line?: number
+  isFileLine?: boolean
+  isNumbered?: boolean
+  lines?: { n: number; text: string; isHit: boolean; inFile?: string }[]
+}
+
+/** What the dialog open right now asks about, so the pane can show it beside. */
+export type Pending = {
+  source: string
+  at: number
+  items: ({ hash: string; rule: string; mask: string } & Place)[]
+}
+
 /** A secret the model may read: passed once, or marked as no secret. */
 export type Allowed = {
   hash: string
@@ -107,6 +124,8 @@ declare module 'claude-code' {
       expanded: number[]
       /** The secrets whose value the person is shown right now, by hash. */
       revealed: string[]
+      /** The finding the open dialog asks about; null when none is open. */
+      pending: Pending | null
       /** The pane's tab. */
       tab: 'session' | 'history'
       /** The history events the person opened, by id. */
